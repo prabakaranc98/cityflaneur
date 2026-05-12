@@ -348,7 +348,7 @@ export function BentoControls({ context, loading, logEvents, onChange, onSubmit,
         </div>
       </div>
 
-      <button className="primary-action" type="button" disabled={loading} onClick={onSubmit}>
+      <button className="primary-action" type="button" disabled={loading} onClick={() => onSubmit()}>
         {loading ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
         {loading ? "Searching…" : "Find three options"}
         {!loading ? <UsersRound aria-hidden="true" /> : null}

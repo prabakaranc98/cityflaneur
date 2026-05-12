@@ -80,7 +80,10 @@ def normalize_osm_feature(feature: dict) -> Place | None:
     name = tags.get("name")
     if not name or lat is None or lng is None:
         return None
-    coordinates = Coordinates(lat=float(lat), lng=float(lng))
+    try:
+        coordinates = Coordinates(lat=float(lat), lng=float(lng))
+    except Exception:
+        return None
     if not is_in_manhattan_bounds(coordinates):
         return None
 
