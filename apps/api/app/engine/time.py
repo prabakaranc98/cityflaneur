@@ -41,7 +41,16 @@ def _window_contains(window: str, minutes_now: int) -> bool:
     return minutes_now >= start or minutes_now <= end
 
 
+_FUZZY_TIMES = {"dusk": 19 * 60, "dawn": 6 * 60, "midnight": 24 * 60, "noon": 12 * 60}
+
+
 def _parse_hhmm(value: str) -> int:
-    hour, minute = value.split(":", maxsplit=1)
+    value = value.strip().lower()
+    if value in _FUZZY_TIMES:
+        return _FUZZY_TIMES[value]
+    parts = value.split(":", maxsplit=1)
+    if len(parts) == 1:
+        return int(parts[0]) * 60
+    hour, minute = parts
     return int(hour) * 60 + int(minute)
 

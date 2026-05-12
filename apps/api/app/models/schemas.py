@@ -129,6 +129,14 @@ class Place(BaseModel):
     embedding: list[float] = Field(default_factory=list)
 
 
+class WalkLeg(BaseModel):
+    from_name: str
+    to_name: str
+    distance_m: int
+    walking_minutes: int
+    transit_hint: str | None = None
+
+
 class ItineraryStop(BaseModel):
     place_id: str
     name: str
@@ -139,6 +147,8 @@ class ItineraryStop(BaseModel):
     dwell_minutes: int
     arrival_window: str
     indoor: bool
+    nearest_subway: str | None = None
+    walk_from_previous_m: int | None = None
 
 
 class RouteGeometry(BaseModel):
@@ -156,6 +166,7 @@ class ItineraryOption(BaseModel):
     scores: dict[str, float]
     explanation: str
     caveats: list[str] = Field(default_factory=list)
+    walk_legs: list[WalkLeg] = Field(default_factory=list)
 
 
 class RecommendationsResponse(BaseModel):

@@ -33,6 +33,14 @@ export type HyperContext = {
   parsed_signals?: Record<string, unknown>;
 };
 
+export type WalkLeg = {
+  from_name: string;
+  to_name: string;
+  distance_m: number;
+  walking_minutes: number;
+  transit_hint?: string | null;
+};
+
 export type ItineraryStop = {
   place_id: string;
   name: string;
@@ -43,6 +51,8 @@ export type ItineraryStop = {
   dwell_minutes: number;
   arrival_window: string;
   indoor: boolean;
+  nearest_subway?: string | null;
+  walk_from_previous_m?: number | null;
 };
 
 export type RouteGeometry = {
@@ -60,6 +70,7 @@ export type ItineraryOption = {
   scores: Record<string, number>;
   explanation: string;
   caveats: string[];
+  walk_legs: WalkLeg[];
 };
 
 export type RecommendationsResponse = {

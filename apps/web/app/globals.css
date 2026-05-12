@@ -43,7 +43,9 @@ button {
 .app-shell {
   display: grid;
   grid-template-columns: minmax(330px, 380px) minmax(0, 1fr);
-  min-height: 100vh;
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
 }
 
 .control-panel {
@@ -52,7 +54,9 @@ button {
     linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(247, 249, 248, 0.92)),
     var(--surface);
   padding: 22px;
+  height: 100vh;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .control-header,
@@ -318,17 +322,19 @@ button {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(360px, 440px);
   min-width: 0;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .map-wrap {
   position: relative;
   min-width: 0;
-  min-height: 100vh;
+  height: 100vh;
 }
 
 .map-panel {
-  min-height: 100vh;
+  width: 100%;
+  height: 100%;
   background: #dce7df;
 }
 
@@ -431,11 +437,173 @@ button {
   border: 1px solid rgba(31, 37, 40, 0.12);
 }
 
+/* ── Street View overlay ──────────────────────────────── */
+
+.sv-overlay {
+  position: absolute;
+  inset-block: 0;
+  right: 0;
+  width: min(380px, 52%);
+  background: rgba(20, 24, 26, 0.96);
+  backdrop-filter: blur(14px);
+  display: flex;
+  flex-direction: column;
+  z-index: 20;
+  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.35);
+  animation: sv-slide-in 0.22s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+@keyframes sv-slide-in {
+  from { transform: translateX(100%); opacity: 0; }
+  to   { transform: translateX(0);   opacity: 1; }
+}
+
+.sv-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 16px 14px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.sv-header strong {
+  display: block;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 750;
+  line-height: 1.3;
+}
+
+.sv-header span {
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 12px;
+  margin-top: 2px;
+  display: block;
+}
+
+.sv-close {
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.12);
+  border: none;
+  color: #fff;
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  font-size: 14px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  transition: background 0.15s;
+}
+
+.sv-close:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.sv-viewer-canvas {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  /* Mapillary mounts its canvas inside this div */
+}
+
+.sv-viewer-canvas .mapillary-js {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.sv-loading {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 13px;
+  padding: 40px 20px;
+}
+
+.sv-images {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sv-img-wrap {
+  position: relative;
+}
+
+.sv-img-wrap img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+}
+
+.sv-img-label {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.75);
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.65));
+}
+
+.sv-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.sv-btn-primary {
+  display: block;
+  text-align: center;
+  padding: 9px 14px;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+  transition: opacity 0.15s;
+}
+
+.sv-btn-primary:hover { opacity: 0.88; }
+
+.sv-btn-secondary {
+  display: block;
+  text-align: center;
+  padding: 8px 14px;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.8);
+  border-radius: 7px;
+  font-size: 12px;
+  text-decoration: none;
+  transition: background 0.15s;
+}
+
+.sv-btn-secondary:hover { background: rgba(255, 255, 255, 0.16); }
+
+.map-hud-hint {
+  color: var(--muted) !important;
+  font-weight: 500 !important;
+  opacity: 0.8;
+}
+
+/* ────────────────────────────────────────────────────── */
+
 .results-panel {
   border-left: 1px solid var(--line);
   background: rgba(249, 250, 248, 0.94);
   padding: 20px;
+  height: 100vh;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .status-pill {
@@ -903,6 +1071,58 @@ button {
   font-size: 12px;
 }
 
+.walk-leg {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 5px;
+  padding: 5px 7px;
+  border-radius: 6px;
+  background: #f0f6f5;
+  color: #2a6460;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.walk-leg svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+}
+
+.transit-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #1f6f8b;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.transit-hint svg {
+  width: 12px;
+  height: 12px;
+}
+
+.subway-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 3px;
+  border-radius: 5px;
+  background: #e8f4f7;
+  color: #174e62;
+  padding: 3px 7px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.subway-badge svg {
+  width: 11px;
+  height: 11px;
+}
+
 .card-actions {
   display: flex;
   gap: 8px;
@@ -927,19 +1147,29 @@ button {
 }
 
 @media (max-width: 1100px) {
-  .app-shell,
+  .app-shell {
+    height: auto;
+    max-height: none;
+    overflow: visible;
+    grid-template-columns: 1fr;
+  }
+
   .workspace {
     grid-template-columns: 1fr;
+    height: auto;
+    overflow: visible;
   }
 
   .control-panel,
   .results-panel {
+    height: auto;
     border: 0;
+    overflow-y: visible;
   }
 
   .map-wrap,
   .map-panel {
-    min-height: 52vh;
+    height: 52vh;
   }
 }
 

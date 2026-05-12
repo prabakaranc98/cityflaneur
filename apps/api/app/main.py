@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
 from app.data.seed import SEED_PLACES
 from app.engine.context import parse_context
-from app.engine.geo import build_grid_cells
+from app.engine.geo import build_grid_cells, full_manhattan_grid
 from app.engine.recommender import recommend_itineraries
 from app.models.schemas import (
     ContextParseRequest,
@@ -40,8 +40,15 @@ app.add_middleware(
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok", "catalog_version": settings.default_catalog_version}
+def health() -> dict[str, object]:
+    from app.data.poi_cache import cache_info
+    return {"status": "ok", "catalog_version": settings.default_catalog_version, "osm_cache": cache_info()}
+
+
+@app.get("/api/admin/cache-info")
+def cache_info_endpoint() -> dict[str, object]:
+    from app.data.poi_cache import cache_info
+    return cache_info()
 
 
 @app.post("/api/context/parse", response_model=HyperContext)
@@ -70,9 +77,17 @@ def places_endpoint(
     q: str | None = Query(default=None, min_length=1),
     category: PlaceCategory | None = None,
     neighborhood: str | None = None,
+    lat: float | None = Query(default=None, ge=40.68, le=40.89),
+    lng: float | None = Query(default=None, ge=-74.05, le=-73.90),
+    radius_m: int = Query(default=2000, ge=200, le=5000),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> PlacesResponse:
-    places = SEED_PLACES
+    if lat is not None and lng is not None:
+        from app.data.poi_cache import pois_for_context
+        osm_places = pois_for_context(lat, lng, float(radius_m))
+        places = osm_places if osm_places else SEED_PLACES
+    else:
+        places = SEED_PLACES
     if q:
         needle = q.lower()
         places = [
@@ -94,7 +109,7 @@ def places_endpoint(
 
 @app.get("/api/grid-cells", response_model=GridCellsResponse)
 def grid_cells_endpoint() -> GridCellsResponse:
-    cells = build_grid_cells(SEED_PLACES)
+    cells = full_manhattan_grid()
     return GridCellsResponse(cells=cells, count=len(cells))
 
 

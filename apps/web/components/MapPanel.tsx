@@ -2,12 +2,24 @@
 
 import { useEffect, useRef, useState } from "react";
 import maplibregl, { type Map, type Marker } from "maplibre-gl";
-import { getGridCells } from "@/lib/api";
+import { getGridCells, getStreetScenes } from "@/lib/api";
+import { MapillaryViewer } from "@/components/MapillaryViewer";
 import type { GridCell, HyperContext, ItineraryOption } from "@/types/cityflaneur";
+
+const MAPILLARY_TOKEN = process.env.NEXT_PUBLIC_MAPILLARY_ACCESS_TOKEN ?? "";
 
 type Props = {
   context: HyperContext;
   selected: ItineraryOption | null;
+};
+
+type StreetViewStop = {
+  name: string;
+  neighborhood: string;
+  lat: number;
+  lng: number;
+  mapillaryImageId: string | null;
+  loading: boolean;
 };
 
 export function MapPanel({ context, selected }: Props) {
@@ -15,6 +27,7 @@ export function MapPanel({ context, selected }: Props) {
   const mapRef = useRef<Map | null>(null);
   const markersRef = useRef<Marker[]>([]);
   const [gridCells, setGridCells] = useState<GridCell[]>([]);
+  const [streetView, setStreetView] = useState<StreetViewStop | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -151,6 +164,10 @@ export function MapPanel({ context, selected }: Props) {
   }, [gridCells]);
 
   useEffect(() => {
+    setStreetView(null);
+  }, [selected?.id]);
+
+  useEffect(() => {
     const map = mapRef.current;
     if (!map || !selected) {
       return;
@@ -212,16 +229,28 @@ export function MapPanel({ context, selected }: Props) {
     markersRef.current.push(startMarker);
 
     selected.stops.forEach((stop, index) => {
-      const marker = new maplibregl.Marker({
-        element: markerElement(String(index + 1), index === 0 ? "first" : "stop")
-      })
+      const el = markerElement(String(index + 1), index === 0 ? "first" : "stop");
+      el.title = `${stop.name} — click for street view`;
+      el.style.cursor = "pointer";
+      const marker = new maplibregl.Marker({ element: el })
         .setLngLat([stop.coordinates.lng, stop.coordinates.lat])
-        .setPopup(
-          new maplibregl.Popup({ offset: 18 }).setDOMContent(
-            popupNode(stop.name, `${stop.role} · ${stop.dwell_minutes} min · ${stop.neighborhood}`)
-          )
-        )
         .addTo(map);
+      el.addEventListener("click", () => {
+        const lat = stop.coordinates.lat;
+        const lng = stop.coordinates.lng;
+        setStreetView({ name: stop.name, neighborhood: stop.neighborhood, lat, lng, mapillaryImageId: null, loading: true });
+        getStreetScenes(lat, lng, 3).then((res) => {
+          const mapillaryImg = res.images.find((img) => img.source === "mapillary");
+          // Image IDs come back as "mapillary:297628248839671" — strip the prefix
+          const rawId = mapillaryImg?.id ?? "";
+          const imageId = rawId.startsWith("mapillary:") ? rawId.slice("mapillary:".length) : rawId;
+          setStreetView((prev) =>
+            prev && prev.lat === lat ? { ...prev, mapillaryImageId: imageId || null, loading: false } : prev
+          );
+        }).catch(() => {
+          setStreetView((prev) => prev && prev.lat === lat ? { ...prev, loading: false } : prev);
+        });
+      });
       markersRef.current.push(marker);
     });
 
@@ -235,6 +264,41 @@ export function MapPanel({ context, selected }: Props) {
   return (
     <div className="map-wrap">
       <div ref={containerRef} className="map-panel" aria-label="Manhattan itinerary map" />
+
+      {streetView && !streetView.loading && streetView.mapillaryImageId && MAPILLARY_TOKEN ? (
+        <MapillaryViewer
+          key={streetView.mapillaryImageId}
+          imageId={streetView.mapillaryImageId}
+          accessToken={MAPILLARY_TOKEN}
+          stopName={streetView.name}
+          neighborhood={streetView.neighborhood}
+          onClose={() => setStreetView(null)}
+        />
+      ) : streetView ? (
+        <div className="sv-overlay" role="dialog" aria-label={`Street view: ${streetView.name}`}>
+          <div className="sv-header">
+            <div>
+              <strong>{streetView.name}</strong>
+              <span>{streetView.neighborhood}</span>
+            </div>
+            <button className="sv-close" onClick={() => setStreetView(null)} aria-label="Close">✕</button>
+          </div>
+          <div className="sv-loading">
+            {streetView.loading ? "Finding street imagery…" : "No Mapillary imagery at this location."}
+          </div>
+          {!streetView.loading ? (
+            <div className="sv-actions">
+              <a
+                href={`https://www.mapillary.com/app/?lat=${streetView.lat}&lng=${streetView.lng}&z=17`}
+                target="_blank" rel="noreferrer" className="sv-btn-secondary"
+              >
+                Browse Mapillary near here ↗
+              </a>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="map-hud" aria-label="Map legend">
         <span>
           <i className="legend-route" />
@@ -244,6 +308,9 @@ export function MapPanel({ context, selected }: Props) {
           <i className="legend-grid" />
           POI grid
         </span>
+        {selected ? (
+          <span className="map-hud-hint">Click a stop marker for street view</span>
+        ) : null}
         {selected ? <strong>{selected.estimated_duration_minutes} min</strong> : null}
       </div>
     </div>

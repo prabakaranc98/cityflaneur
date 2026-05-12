@@ -1,7 +1,7 @@
 "use client";
 
-import { Check, Clock3, CloudSun, Compass, Footprints, Heart, Navigation, Sparkles, X } from "lucide-react";
-import type { HyperContext, ItineraryOption } from "@/types/cityflaneur";
+import { Check, Clock3, CloudSun, Compass, Footprints, Heart, Navigation, Sparkles, Train, X } from "lucide-react";
+import type { HyperContext, ItineraryOption, WalkLeg } from "@/types/cityflaneur";
 import { sendFeedback } from "@/lib/api";
 
 type Props = {
@@ -48,14 +48,35 @@ export function RecommendationCard({ option, selected, context, sessionId, onSel
         <ScoreBar label="Novelty" value={option.scores.novelty ?? 0} icon="novelty" />
       </div>
       <ol>
-        {option.stops.map((stop) => (
-          <li key={stop.place_id}>
-            <strong>{stop.name}</strong>
-            <span>
-              {stop.role} · {stop.dwell_minutes} min · {stop.neighborhood}
-            </span>
-          </li>
-        ))}
+        {option.stops.map((stop, index) => {
+          const leg = option.walk_legs?.[index];
+          return (
+            <li key={stop.place_id}>
+              {leg && (
+                <div className="walk-leg">
+                  <Footprints aria-hidden="true" />
+                  <span>{leg.walking_minutes} min walk{leg.distance_m > 0 ? ` (${leg.distance_m}m)` : ""}</span>
+                  {leg.transit_hint ? (
+                    <span className="transit-hint">
+                      <Train aria-hidden="true" />
+                      {leg.transit_hint}
+                    </span>
+                  ) : null}
+                </div>
+              )}
+              <strong>{stop.name}</strong>
+              <span>
+                {stop.role} · {stop.dwell_minutes} min · {stop.arrival_window}
+              </span>
+              {stop.nearest_subway ? (
+                <span className="subway-badge">
+                  <Train aria-hidden="true" />
+                  {stop.nearest_subway}
+                </span>
+              ) : null}
+            </li>
+          );
+        })}
       </ol>
       {option.caveats.length > 0 ? (
         <div className="caveats">

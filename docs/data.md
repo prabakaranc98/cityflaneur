@@ -41,6 +41,12 @@ Live context sources:
 - The current fallback is curated trivia in `app/services/pulse.py`, so the product still works without a live key.
 - Live pulse content is displayed as context, not as a hard recommendation constraint.
 
+Street imagery sources:
+
+- Mapillary can provide nearby street-level imagery for selected itinerary stops.
+- Google Street View can provide a fallback static street scene after metadata confirms imagery exists.
+- The app displays provider URLs with attribution and does not scrape, cache, or reuse images as training data.
+
 ## Ingestion Shape
 
 The ingestion layer should produce normalized `Place` records:

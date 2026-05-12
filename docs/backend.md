@@ -13,6 +13,7 @@ Runtime entry point:
 - `app/engine/agents.py`: simulated persona panel for approval/rating.
 - `app/engine/llm.py`: semantic critic boundary; currently deterministic, ready for an LLM provider.
 - `app/services/pulse.py`: neighborhood trivia and optional Exa-powered live pulse.
+- `app/services/streetscapes.py`: optional Mapillary and Google Street View imagery provider layer.
 - `app/data/seed.py`: current Manhattan seed catalog.
 - `app/data/ingestion.py`: normalization helpers for future OSM and NYC Open Data rows.
 - `app/data/providers.py`: source adapter boundaries for OSM, NYC Open Data, NWS weather, and commercial providers.
@@ -105,6 +106,7 @@ Useful endpoints:
 - `GET /api/places`
 - `GET /api/grid-cells`
 - `GET /api/neighborhood-pulse?neighborhoods=Chelsea&neighborhoods=SoHo`
+- `GET /api/streetscapes?lat=40.7359&lng=-73.9911`
 - `POST /api/feedback`
 
 ## Optional API Keys
@@ -122,3 +124,18 @@ Exa:
 - Set `ENABLE_LIVE_PULSE=true`.
 - Used by `/api/neighborhood-pulse` for current neighborhood headlines/events.
 - If no key is present, the endpoint returns curated local trivia only.
+
+Street imagery:
+
+- Set `ENABLE_STREETSCAPES=true`.
+- Set `MAPILLARY_ACCESS_TOKEN`.
+- Set `GOOGLE_MAPS_API_KEY`.
+- Used by `/api/streetscapes` and the selected-route street scene panel.
+- The backend returns provider image URLs and attribution; it does not scrape or store images.
+
+Provider smoke test:
+
+```bash
+cd apps/api
+UV_CACHE_DIR=.uv-cache uv run --python 3.11 --extra dev python scripts/test_providers.py
+```

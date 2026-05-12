@@ -9,6 +9,8 @@ EARTH_RADIUS_M = 6_371_000
 WALKING_SPEED_M_PER_MIN = 80
 MANHATTAN_MIN_LAT = 40.68
 MANHATTAN_MIN_LNG = -74.05
+MANHATTAN_MAX_LAT = 40.88
+MANHATTAN_MAX_LNG = -73.91
 MANHATTAN_GRID_REF_LAT = 40.785
 MANHATTAN_GRID_CELL_SIZE_M = 500
 M_PER_DEG_LAT = 111_320
@@ -103,6 +105,66 @@ def grid_cell_bounds(x_index: int, y_index: int) -> list[Coordinates]:
         unproject_from_grid_m(max_x, max_y),
         unproject_from_grid_m(min_x, max_y),
     ]
+
+
+def full_manhattan_grid() -> list[GridCell]:
+    """All 500m cells covering Manhattan's bounding box (~1080 cells)."""
+    max_x_m = (MANHATTAN_MAX_LNG - MANHATTAN_MIN_LNG) * M_PER_DEG_LNG
+    max_y_m = (MANHATTAN_MAX_LAT - MANHATTAN_MIN_LAT) * M_PER_DEG_LAT
+    x_count = math.ceil(max_x_m / MANHATTAN_GRID_CELL_SIZE_M)
+    y_count = math.ceil(max_y_m / MANHATTAN_GRID_CELL_SIZE_M)
+    cells: list[GridCell] = []
+    for y_index in range(y_count):
+        for x_index in range(x_count):
+            min_x = x_index * MANHATTAN_GRID_CELL_SIZE_M
+            min_y = y_index * MANHATTAN_GRID_CELL_SIZE_M
+            cell_id = f"mnh-500m-{y_index:03d}-{x_index:03d}"
+            center = unproject_from_grid_m(
+                min_x + MANHATTAN_GRID_CELL_SIZE_M / 2,
+                min_y + MANHATTAN_GRID_CELL_SIZE_M / 2,
+            )
+            cells.append(
+                GridCell(
+                    id=cell_id,
+                    center=center,
+                    bounds=grid_cell_bounds(x_index, y_index),
+                    x_index=x_index,
+                    y_index=y_index,
+                    cell_size_m=MANHATTAN_GRID_CELL_SIZE_M,
+                    place_count=0,
+                    top_categories=[],
+                    neighborhoods=[],
+                )
+            )
+    return cells
+
+
+def grid_cells_in_radius(origin: Coordinates, radius_m: float) -> list[tuple[int, int, str, Coordinates]]:
+    """Returns (x_index, y_index, cell_id, center) for all cells overlapping origin within radius_m."""
+    origin_x, origin_y = project_to_grid_m(origin)
+    origin_xi = math.floor(origin_x / MANHATTAN_GRID_CELL_SIZE_M)
+    origin_yi = math.floor(origin_y / MANHATTAN_GRID_CELL_SIZE_M)
+    cell_radius = math.ceil(radius_m / MANHATTAN_GRID_CELL_SIZE_M) + 1
+    max_x_m = (MANHATTAN_MAX_LNG - MANHATTAN_MIN_LNG) * M_PER_DEG_LNG
+    max_y_m = (MANHATTAN_MAX_LAT - MANHATTAN_MIN_LAT) * M_PER_DEG_LAT
+    x_max = math.ceil(max_x_m / MANHATTAN_GRID_CELL_SIZE_M) - 1
+    y_max = math.ceil(max_y_m / MANHATTAN_GRID_CELL_SIZE_M) - 1
+    result: list[tuple[int, int, str, Coordinates]] = []
+    half_diag = MANHATTAN_GRID_CELL_SIZE_M * math.sqrt(2) / 2
+    for dy in range(-cell_radius, cell_radius + 1):
+        for dx in range(-cell_radius, cell_radius + 1):
+            xi = origin_xi + dx
+            yi = origin_yi + dy
+            if xi < 0 or yi < 0 or xi > x_max or yi > y_max:
+                continue
+            center = unproject_from_grid_m(
+                xi * MANHATTAN_GRID_CELL_SIZE_M + MANHATTAN_GRID_CELL_SIZE_M / 2,
+                yi * MANHATTAN_GRID_CELL_SIZE_M + MANHATTAN_GRID_CELL_SIZE_M / 2,
+            )
+            if haversine_m(origin, center) <= radius_m + half_diag:
+                cell_id = f"mnh-500m-{yi:03d}-{xi:03d}"
+                result.append((xi, yi, cell_id, center))
+    return result
 
 
 def build_grid_cells(places: list[Place]) -> list[GridCell]:

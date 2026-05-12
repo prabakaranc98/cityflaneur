@@ -54,6 +54,7 @@ UV_CACHE_DIR=.uv-cache uv run --python 3.11 --extra dev uvicorn app.main:app --r
 - `GET /api/places`: searches the seeded/debug POI catalog.
 - `GET /api/grid-cells`: returns stable 500m Manhattan grid summaries for map overlays and future indexing.
 - `GET /api/neighborhood-pulse`: returns curated trivia plus optional Exa live web results for selected neighborhoods.
+- `GET /api/streetscapes`: returns optional Mapillary and Google Street View imagery near selected stops.
 
 ## Data Posture
 
@@ -63,6 +64,7 @@ Optional keys:
 
 - `OPENROUTER_API_KEY` + `ENABLE_LLM_ADAPTERS=true`: real LLM itinerary critique.
 - `EXA_API_KEY` + `ENABLE_LIVE_PULSE=true`: live neighborhood pulse/headline context.
+- `MAPILLARY_ACCESS_TOKEN` + `GOOGLE_MAPS_API_KEY` + `ENABLE_STREETSCAPES=true`: street-level imagery near route stops.
 
 ## Validation
 
@@ -73,6 +75,13 @@ make seed-snapshot
 ```
 
 The simulator runs representative Manhattan personas across mood, weather, budget, and group context to catch obvious recommendation failures before a real pilot.
+
+Provider smoke test:
+
+```bash
+cd apps/api
+UV_CACHE_DIR=.uv-cache uv run --python 3.11 --extra dev python scripts/test_providers.py
+```
 
 ## Docs
 

@@ -16,6 +16,7 @@ from app.engine.geo import (
 )
 from app.engine.llm import get_itinerary_critic
 from app.engine.time import effective_datetime, is_place_open
+from app.engine.transit import nearest_subway_label
 from app.models.schemas import (
     Budget,
     HyperContext,
@@ -25,6 +26,7 @@ from app.models.schemas import (
     Mood,
     Place,
     PlaceCategory,
+    WalkLeg,
     WeatherCondition,
 )
 
@@ -131,19 +133,28 @@ def recommend_itineraries(
     places: list[Place] | None = None,
     limit: int = 3,
 ) -> list[ItineraryOption]:
-    catalog = places or SEED_PLACES
+    if places is not None:
+        catalog = places
+    else:
+        from app.data.poi_cache import pois_for_context
+        osm_places = pois_for_context(
+            context.location.lat, context.location.lng, context.mobility_radius_m
+        )
+        catalog = osm_places if len(osm_places) >= 8 else SEED_PLACES
     candidates = feasible_places(context, catalog)
     if len(candidates) < 6:
         candidates = relaxed_feasible_places(context, catalog)
 
     plans = generate_candidate_plans(context, candidates)
-    options = [option for plan in plans if (option := build_option_from_plan(context, plan)) is not None]
-
+    # Build options without LLM critic first (fast pass)
+    options = [option for plan in plans if (option := build_option_from_plan(context, plan, skip_llm=True)) is not None]
     options.sort(key=lambda option: option.scores["total"], reverse=True)
     diverse = diversify(options, limit)
     if len(diverse) < limit:
         diverse.extend(fallback_options(context, candidates, limit - len(diverse), diverse))
-    return diverse[:limit]
+    # Apply LLM critic only to the final shortlist
+    diverse = [_apply_llm_critic(context, option) for option in diverse[:limit]]
+    return diverse
 
 
 def generate_candidate_plans(context: HyperContext, candidates: list[Place]) -> list[CandidatePlan]:
@@ -190,7 +201,7 @@ def expand_route_beam(
     strategy_hint: str | None = None,
 ) -> list[CandidatePlan]:
     beams: list[tuple[Place, ...]] = [(first,)]
-    max_duration = context.available_minutes + 25
+    max_duration = context.available_minutes + 18
     max_leg = max(900, context.mobility_radius_m * 0.72)
 
     for _ in range(1, stop_count):
@@ -227,41 +238,55 @@ def expand_route_beam(
     return plans
 
 
-def build_option_from_plan(context: HyperContext, plan: CandidatePlan) -> ItineraryOption | None:
+def build_option_from_plan(
+    context: HyperContext,
+    plan: CandidatePlan,
+    skip_llm: bool = False,
+) -> ItineraryOption | None:
     selected = list(plan.places)
     if len(selected) < 2:
         return None
 
     distance_m = walking_route_distance_m(context.location, [place.coordinates for place in selected])
-    duration = walking_minutes(distance_m) + sum(DWELL_MINUTES[place.category] for place in selected)
-    if duration > context.available_minutes + 35:
+    duration = duration_for_places(context, selected)
+    if duration > context.available_minutes + 20:
         repaired = repair_short_route_from_places(context, selected)
         if repaired is None:
             return None
         selected = repaired
         distance_m = walking_route_distance_m(context.location, [place.coordinates for place in selected])
-        duration = walking_minutes(distance_m) + sum(DWELL_MINUTES[place.category] for place in selected)
+        duration = duration_for_places(context, selected)
 
     metrics = score_itinerary(context, selected, distance_m)
     agents = agent_panel_score(context, metrics)
-    critic = get_itinerary_critic().review(context, selected, metrics)
+    if skip_llm:
+        critic_score = 0.5
+        critic_provider = "pending"
+        critic_caveats: list[str] = []
+    else:
+        critic = get_itinerary_critic().review(context, selected, metrics)
+        critic_score = critic.score
+        critic_provider = critic.provider
+        critic_caveats = critic.caveats
+
     exploration = route_exploration_bonus(context, selected, plan.search_seed)
     algorithmic_score = metrics["algorithmic_score"]
     total = (
         0.58 * algorithmic_score
         + 0.25 * agents["agent_approval"]
-        + 0.12 * critic.score
+        + 0.12 * critic_score
         + 0.05 * exploration
     )
     scores = {
         **metrics,
         **agents,
-        "llm_critique": critic.score,
+        "llm_critique": critic_score,
         "exploration_bonus": round(exploration, 4),
         "total": round(max(0.0, min(1.0, total)), 4),
     }
     stop_models = build_stops_from_roles(context, selected, list(plan.roles))
-    caveats = build_caveats(context, selected, duration) + critic.caveats
+    walk_legs = build_walk_legs(context, selected, stop_models)
+    caveats = build_caveats(context, selected, duration) + critic_caveats
     title = titled_plan_option(plan.strategy, selected)
 
     return ItineraryOption(
@@ -272,9 +297,50 @@ def build_option_from_plan(context: HyperContext, plan: CandidatePlan) -> Itiner
         estimated_duration_minutes=duration,
         total_walking_m=distance_m,
         scores=scores,
-        explanation=explain_plan_option(context, selected, plan.strategy, agents["agent_approval_count"], critic.provider),
+        explanation=explain_plan_option(context, selected, plan.strategy, agents["agent_approval_count"], critic_provider),
         caveats=dedupe_strings(caveats),
+        walk_legs=walk_legs,
     )
+
+
+def _apply_llm_critic(context: HyperContext, option: ItineraryOption) -> ItineraryOption:
+    """Run LLM critic on a pre-built option (called only for the final shortlist)."""
+    from app.models.schemas import Place as _Place
+    selected = [
+        _Place(
+            id=stop.place_id,
+            name=stop.name,
+            category=stop.category,
+            coordinates=stop.coordinates,
+            neighborhood=stop.neighborhood,
+            tags=[],
+            atmosphere_tags=[],
+            opening_hours={},
+            price_level=0,
+            rating=4.0,
+            quality_signals={},
+            source="reconstructed",
+            source_id=stop.place_id,
+            attribution="",
+            indoor=stop.indoor,
+        )
+        for stop in option.stops
+    ]
+    critic = get_itinerary_critic().review(context, selected, option.scores)
+    total = (
+        0.58 * option.scores["algorithmic_score"]
+        + 0.25 * option.scores["agent_approval"]
+        + 0.12 * critic.score
+        + 0.05 * option.scores["exploration_bonus"]
+    )
+    new_scores = {**option.scores, "llm_critique": critic.score, "total": round(max(0.0, min(1.0, total)), 4)}
+    new_caveats = dedupe_strings(list(option.caveats) + critic.caveats)
+    new_explanation = option.explanation.replace("pending", critic.provider)
+    return option.model_copy(update={
+        "scores": new_scores,
+        "caveats": new_caveats,
+        "explanation": new_explanation,
+    })
 
 
 def feasible_places(context: HyperContext, places: list[Place]) -> list[Place]:
@@ -365,7 +431,7 @@ def build_option(
 
     stop_models = build_stops(context, selected, template)
     distance_m = walking_route_distance_m(context.location, [place.coordinates for place in selected])
-    duration = walking_minutes(distance_m) + sum(stop.dwell_minutes for stop in stop_models)
+    duration = duration_for_places(context, selected)
     scores = score_itinerary(context, selected, distance_m, template)
     caveats = build_caveats(context, selected, duration)
     title = titled_option(context, template, selected)
@@ -434,7 +500,7 @@ def score_itinerary(
         for place in selected
     )
     effort = max(0.0, 1.0 - distance_m / max(context.mobility_radius_m * 1.4, 1))
-    duration = walking_minutes(distance_m) + sum(DWELL_MINUTES[place.category] for place in selected)
+    duration = duration_for_places(context, selected)
     duration_fit = max(0.0, 1.0 - max(0, duration - context.available_minutes) / max(context.available_minutes, 1))
     weather_fit = average(place_weather_fit(context, place) for place in selected)
     quality = average(place.rating / 5.0 for place in selected)
@@ -502,10 +568,52 @@ def trim_to_time_budget(context: HyperContext, selected: list[Place]) -> list[Pl
     return trimmed
 
 
+def leg_travel_minutes(from_coords: "Coordinates", to_coords: "Coordinates") -> int:
+    """Estimate travel minutes for a leg, using subway when it's faster."""
+    from app.engine.transit import nearest_subway_label, _haversine_m
+    dist_m = walking_route_distance_m(from_coords, [to_coords])
+    walk_mins = walking_minutes(dist_m)
+    if dist_m < 700:
+        return walk_mins
+    # Check if subway saves time: walk to station + 2 min wait + ride at ~500m/min
+    sub_at_from = nearest_subway_label(from_coords.lat, from_coords.lng, max_distance_m=600)
+    sub_at_to = nearest_subway_label(to_coords.lat, to_coords.lng, max_distance_m=600)
+    if sub_at_from and sub_at_to:
+        walk_to_from = int(_haversine_m(from_coords.lat, from_coords.lng, *_extract_station_coords(sub_at_from)) or 200)
+        walk_to_to = int(_haversine_m(to_coords.lat, to_coords.lng, *_extract_station_coords(sub_at_to)) or 200)
+        ride_mins = max(3, int(dist_m / 500))
+        transit_mins = walking_minutes(walk_to_from) + 2 + ride_mins + walking_minutes(walk_to_to)
+        return min(walk_mins, transit_mins)
+    return walk_mins
+
+
+def _extract_station_coords(label: str) -> tuple[float, float]:
+    """Best-effort: re-look up station coords from label text via haversine."""
+    from app.engine.transit import _STATIONS
+    name_part = label.split("(")[0].strip()
+    for station in _STATIONS:
+        if station.name.lower() == name_part.lower():
+            return station.lat, station.lng
+    return 40.75, -73.99  # Midtown fallback
+
+
+def route_travel_minutes(origin: "Coordinates", stops: list["Coordinates"]) -> int:
+    """Total transit-aware travel time for a multi-stop route."""
+    if not stops:
+        return 0
+    total = 0
+    cursor = origin
+    for stop in stops:
+        total += leg_travel_minutes(cursor, stop)
+        cursor = stop
+    return total
+
+
 def duration_for_places(context: HyperContext, selected: list[Place]) -> int:
-    distance = walking_route_distance_m(context.location, [place.coordinates for place in selected])
+    stop_coords = [place.coordinates for place in selected]
+    travel = route_travel_minutes(context.location, stop_coords)
     dwell = sum(DWELL_MINUTES[place.category] for place in selected)
-    return walking_minutes(distance) + dwell
+    return travel + dwell
 
 
 def budget_fit_score(context: HyperContext, selected: list[Place]) -> float:
@@ -684,7 +792,8 @@ def build_stops(context: HyperContext, selected: list[Place], template: Template
     cursor = context.location
     stops: list[ItineraryStop] = []
     for index, place in enumerate(selected):
-        walk = walking_minutes(int(haversine_m(cursor, place.coordinates)))
+        leg_m = int(haversine_m(cursor, place.coordinates))
+        walk = leg_travel_minutes(cursor, place.coordinates)
         elapsed += walk
         arrival = start + timedelta(minutes=elapsed)
         dwell = DWELL_MINUTES[place.category]
@@ -700,6 +809,8 @@ def build_stops(context: HyperContext, selected: list[Place], template: Template
                 dwell_minutes=dwell,
                 arrival_window=arrival.strftime("%-I:%M %p"),
                 indoor=place.indoor,
+                nearest_subway=nearest_subway_label(place.coordinates.lat, place.coordinates.lng),
+                walk_from_previous_m=leg_m,
             )
         )
         elapsed += dwell
@@ -713,7 +824,8 @@ def build_stops_from_roles(context: HyperContext, selected: list[Place], roles: 
     cursor = context.location
     stops: list[ItineraryStop] = []
     for index, place in enumerate(selected):
-        walk = walking_minutes(int(walking_route_distance_m(cursor, [place.coordinates])))
+        leg_m = int(walking_route_distance_m(cursor, [place.coordinates]))
+        walk = leg_travel_minutes(cursor, place.coordinates)
         elapsed += walk
         arrival = start + timedelta(minutes=elapsed)
         dwell = DWELL_MINUTES[place.category]
@@ -728,11 +840,47 @@ def build_stops_from_roles(context: HyperContext, selected: list[Place], roles: 
                 dwell_minutes=dwell,
                 arrival_window=arrival.strftime("%-I:%M %p"),
                 indoor=place.indoor,
+                nearest_subway=nearest_subway_label(place.coordinates.lat, place.coordinates.lng),
+                walk_from_previous_m=leg_m,
             )
         )
         elapsed += dwell
         cursor = place.coordinates
     return stops
+
+
+def build_walk_legs(
+    context: HyperContext,
+    selected: list[Place],
+    stops: list[ItineraryStop],
+) -> list[WalkLeg]:
+    legs: list[WalkLeg] = []
+    cursor = context.location
+    from_name = "Your start"
+    for place, stop in zip(selected, stops):
+        dist_m = int(walking_route_distance_m(cursor, [place.coordinates]))
+        walk_mins = walking_minutes(dist_m)
+        transit_hint: str | None = None
+        if dist_m > 600:
+            sub = nearest_subway_label(cursor.lat, cursor.lng, max_distance_m=600)
+            if sub:
+                transit_mins = leg_travel_minutes(cursor, place.coordinates)
+                if transit_mins < walk_mins:
+                    transit_hint = f"subway ~{transit_mins} min via {sub}"
+                else:
+                    transit_hint = f"or subway from {sub}"
+        legs.append(
+            WalkLeg(
+                from_name=from_name,
+                to_name=stop.name,
+                distance_m=dist_m,
+                walking_minutes=walk_mins,
+                transit_hint=transit_hint,
+            )
+        )
+        cursor = place.coordinates
+        from_name = stop.name
+    return legs
 
 
 def build_caveats(context: HyperContext, selected: list[Place], duration: int) -> list[str]:
