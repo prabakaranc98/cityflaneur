@@ -24,15 +24,19 @@ export function RecommendationCard({ option, selected, context, sessionId, rank,
     await sendFeedback(sessionId, option, action, context);
   }
 
-  const explorationFraction = (option.scores as Record<string, number>).exploration_fraction ?? 0;
+  const explorationFraction = option.scores.exploration_fraction ?? 0;
   const range = rangeLabel(explorationFraction);
+  const totalPct = Math.round(option.scores.total * 100);
+  const sigmaPct = option.scores.total_uncertainty
+    ? Math.round(option.scores.total_uncertainty * 100) : null;
+  const agentSigma = option.scores.agent_approval_sigma;
 
   return (
     <article className={selected ? "recommendation-card selected" : "recommendation-card"}>
       <button className="card-select" type="button" onClick={onSelect}>
         <span>
           <span className="rank-badge" aria-label={`Rank ${rank}`}>{rank}</span>
-          <small>{Math.round(option.scores.total * 100)} fit</small>
+          <small>{totalPct} fit{sigmaPct ? ` ±${sigmaPct}` : ""}</small>
           {option.title}
         </span>
         <Navigation aria-hidden="true" />
@@ -60,6 +64,13 @@ export function RecommendationCard({ option, selected, context, sessionId, rank,
         <ScoreBar label="Effort" value={option.scores.effort ?? 0} />
         <ScoreBar label="Weather" value={option.scores.weather_fit ?? 0} icon="weather" />
         <ScoreBar label="Novelty" value={option.scores.novelty ?? 0} icon="novelty" />
+        {agentSigma !== undefined ? (
+          <ScoreBar
+            label="Confidence"
+            value={Math.max(0, 1 - agentSigma * 4)}
+            suffix={`±${Math.round(agentSigma * 100)}`}
+          />
+        ) : null}
       </div>
       <ol>
         {option.stops.map((stop, index) => {
@@ -117,11 +128,13 @@ export function RecommendationCard({ option, selected, context, sessionId, rank,
 function ScoreBar({
   label,
   value,
-  icon
+  icon,
+  suffix
 }: {
   label: string;
   value: number;
   icon?: "weather" | "novelty";
+  suffix?: string;
 }) {
   const Icon = icon === "weather" ? CloudSun : icon === "novelty" ? Sparkles : Compass;
   const percent = Math.max(0, Math.min(100, Math.round(value * 100)));
@@ -135,7 +148,7 @@ function ScoreBar({
       <div className="score-track">
         <i style={{ width: `${percent}%` }} />
       </div>
-      <b>{percent}</b>
+      <b>{suffix ?? percent}</b>
     </div>
   );
 }

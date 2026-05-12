@@ -13,9 +13,29 @@ export type Interest =
   | "scenic"
   | "history";
 
+export type FlaneurProfile = {
+  pace: "meander" | "moderate" | "purposeful";
+  social_comfort: "introvert" | "ambivert" | "extrovert";
+  familiarity: "tourist" | "occasional" | "local";
+  discovery: "serendipity" | "balanced" | "reliable";
+  mobility: "standard" | "prefers_flat" | "limited";
+  spend_strictness: "anything" | "conscious" | "strict";
+  visitor_type: "resident" | "student" | "international_student" | "visitor";
+  origin_region: "north_america" | "europe" | "asia" | "latin_america" | "rest_of_world" | "local";
+  completed_at: string;
+};
+
 export type Coordinates = {
   lat: number;
   lng: number;
+};
+
+export type TimeSignals = {
+  hour_of_day: number;
+  day_of_week: number;
+  is_rush_hour: boolean;
+  minutes_to_sunset: number;
+  is_weekend: boolean;
 };
 
 export type HyperContext = {
@@ -31,6 +51,9 @@ export type HyperContext = {
   interests: Interest[];
   note?: string | null;
   parsed_signals?: Record<string, unknown>;
+  time_signals?: TimeSignals;
+  weather_auto_detected?: boolean;
+  profile?: FlaneurProfile;
 };
 
 export type WalkLeg = {
@@ -60,6 +83,28 @@ export type RouteGeometry = {
   coordinates: [number, number][];
 };
 
+export type ItineraryScores = {
+  total: number;
+  total_uncertainty?: number;
+  algorithmic_score: number;
+  context_fit: number;
+  effort: number;
+  duration_fit: number;
+  budget_fit: number;
+  weather_fit: number;
+  crowd_fit: number;
+  quality: number;
+  novelty: number;
+  diversity: number;
+  personalization: number;
+  agent_approval: number;
+  agent_approval_sigma?: number;
+  llm_critique: number;
+  exploration_bonus: number;
+  exploration_fraction: number;
+  [key: string]: number | undefined;
+};
+
 export type ItineraryOption = {
   id: string;
   title: string;
@@ -67,7 +112,7 @@ export type ItineraryOption = {
   route_geometry: RouteGeometry;
   estimated_duration_minutes: number;
   total_walking_m: number;
-  scores: Record<string, number>;
+  scores: ItineraryScores;
   explanation: string;
   caveats: string[];
   walk_legs: WalkLeg[];

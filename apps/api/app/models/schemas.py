@@ -63,6 +63,70 @@ class PlaceCategory(StrEnum):
     scenic = "scenic"
 
 
+class Pace(StrEnum):
+    meander = "meander"
+    moderate = "moderate"
+    purposeful = "purposeful"
+
+
+class SocialComfort(StrEnum):
+    introvert = "introvert"
+    ambivert = "ambivert"
+    extrovert = "extrovert"
+
+
+class NeighborhoodFamiliarity(StrEnum):
+    tourist = "tourist"
+    occasional = "occasional"
+    local = "local"
+
+
+class DiscoveryPreference(StrEnum):
+    serendipity = "serendipity"
+    balanced = "balanced"
+    reliable = "reliable"
+
+
+class MobilityLevel(StrEnum):
+    standard = "standard"
+    prefers_flat = "prefers_flat"
+    limited = "limited"
+
+
+class SpendStrictness(StrEnum):
+    anything = "anything"
+    conscious = "conscious"
+    strict = "strict"
+
+
+class VisitorType(StrEnum):
+    resident = "resident"
+    student = "student"
+    international_student = "international_student"
+    visitor = "visitor"
+
+
+class OriginRegion(StrEnum):
+    north_america = "north_america"
+    europe = "europe"
+    asia = "asia"
+    latin_america = "latin_america"
+    rest_of_world = "rest_of_world"
+    local = "local"
+
+
+class FlaneurProfile(BaseModel):
+    pace: Pace = Pace.moderate
+    social_comfort: SocialComfort = SocialComfort.ambivert
+    familiarity: NeighborhoodFamiliarity = NeighborhoodFamiliarity.occasional
+    discovery: DiscoveryPreference = DiscoveryPreference.balanced
+    mobility: MobilityLevel = MobilityLevel.standard
+    spend_strictness: SpendStrictness = SpendStrictness.conscious
+    visitor_type: VisitorType = VisitorType.resident
+    origin_region: OriginRegion = OriginRegion.local
+    completed_at: datetime | None = None
+
+
 class Coordinates(BaseModel):
     lat: float = Field(..., ge=40.68, le=40.89)
     lng: float = Field(..., ge=-74.05, le=-73.90)
@@ -97,6 +161,9 @@ class HyperContext(BaseModel):
     interests: list[Interest] = Field(default_factory=list)
     note: str | None = Field(default=None, max_length=800)
     parsed_signals: dict[str, str | int | float | bool | list[str]] = Field(default_factory=dict)
+    time_signals: dict[str, float | int | bool] | None = None
+    weather_auto_detected: bool = False
+    profile: FlaneurProfile | None = None
 
     @field_validator("interests")
     @classmethod

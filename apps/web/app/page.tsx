@@ -2,12 +2,13 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { BentoControls } from "@/components/BentoControls";
+import { FlaneurOnboarding } from "@/components/FlaneurOnboarding";
 import { MapPanel } from "@/components/MapPanel";
 import { NeighborhoodPulse } from "@/components/NeighborhoodPulse";
 import { RecommendationCard } from "@/components/RecommendationCard";
 import { StreetScenes } from "@/components/StreetScenes";
 import { getNeighborhoodPulse, parseContext, streamRecommendations, type ProgressEvent } from "@/lib/api";
-import type { HyperContext, ItineraryOption, NeighborhoodPulse as NeighborhoodPulseType } from "@/types/cityflaneur";
+import type { FlaneurProfile, HyperContext, ItineraryOption, NeighborhoodPulse as NeighborhoodPulseType } from "@/types/cityflaneur";
 
 const initialContext: HyperContext = {
   location: { lat: 40.7359, lng: -73.9911 },
@@ -32,7 +33,24 @@ export default function Home() {
   const [pulseLoading, setPulseLoading] = useState(false);
   const [pulses, setPulses] = useState<NeighborhoodPulseType[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [profile, setProfile] = useState<FlaneurProfile | null>(null);
   const sessionId = useMemo(() => `session-${Math.random().toString(36).slice(2)}`, []);
+
+  useEffect(() => {
+    const seen = localStorage.getItem("flaneur_onboarding_seen");
+    if (!seen) {
+      setShowOnboarding(true);
+    }
+    const stored = localStorage.getItem("flaneur_profile");
+    if (stored) {
+      try {
+        setProfile(JSON.parse(stored) as FlaneurProfile);
+      } catch {
+        // ignore corrupt data
+      }
+    }
+  }, []);
 
   const selected = recommendations.find((option) => option.id === selectedId) ?? recommendations[0] ?? null;
 
@@ -46,7 +64,8 @@ export default function Home() {
     try {
       const parsed = await parseContext({
         ...ctx,
-        local_datetime: new Date().toISOString()
+        local_datetime: new Date().toISOString(),
+        profile: profile ?? undefined,
       });
       const response = await streamRecommendations(parsed, (event) => {
         setLogEvents((prev) => [...prev, event]);
@@ -92,14 +111,21 @@ export default function Home() {
     };
   }, [selected]);
 
+  function handleOnboardingComplete(p: FlaneurProfile | null) {
+    setShowOnboarding(false);
+    if (p) setProfile(p);
+  }
+
   return (
     <main className="app-shell">
+      {showOnboarding ? <FlaneurOnboarding onComplete={handleOnboardingComplete} /> : null}
       <BentoControls
         context={context}
         loading={loading}
         logEvents={logEvents}
         onChange={setContext}
         onSubmit={submit}
+        onOpenProfile={() => setShowOnboarding(true)}
         onLocationFound={(location) => {
           // Just update the map center — don't auto-submit
           setContext((prev) => ({ ...prev, location }));

@@ -1,6 +1,17 @@
 # Cityflaneur
 
-Cityflaneur is a Manhattan contextual urban recommendation system. Given a user's mood, budget, available time, weather, interests, and GPS location, it generates exactly three walkable itineraries using a pipeline of algorithmic route search, a simulated multi-agent approval panel, and an LLM critic — all backed by live POI data fetched from OpenStreetMap.
+Cityflaneur is a Manhattan contextual urban recommendation system. Given a user's mood, budget, available time, weather, interests, GPS location, and flaneur profile, it generates exactly three walkable itineraries using a pipeline of algorithmic route search, a simulated multi-agent approval panel, Monte Carlo uncertainty estimation, and an LLM critic — all backed by live POI data fetched from OpenStreetMap.
+
+## What We're Improving
+
+Four layers that together make recommendations hyper-local, hyper-contextual, and hyper-personal:
+
+| Layer | Problem before | What changed |
+|---|---|---|
+| 0 — Real-time weather + time | User manually picked weather chip; no time-of-day awareness | Auto-detect weather via OpenMeteo GPS fetch; rush-hour and sunset signals affect routing and scoring |
+| 1 — Flaneur profile | All users got the same scoring weights | 7-question onboarding builds a `FlaneurProfile` (localStorage); includes visitor type + country of origin; bandit context vector expanded d=20→28 |
+| 2 — Urban rhythm + seasonal | Crowd risk was a static field; seasonal venues always "open" | Rule-based crowd multiplier per neighborhood×hour×day-type; seasonal POI gate (Union Square Greenmarket, Governors Island, etc.) |
+| 3 — Monte Carlo validation | Agent scores were point estimates; bandit reward was noisy | K=8 Monte Carlo over perturbed agent weights → μ±σ per plan; "74 fit ±6" on cards; bandit uses LCB reward |
 
 ## Stack
 
@@ -51,7 +62,10 @@ Each candidate plan is scored without calling the LLM (fast pass). The final sho
 
 ```
 total = 0.58 × algorithmic  +  0.25 × agent_approval  +  0.12 × llm_critique  +  0.05 × exploration
+σ     = sqrt((0.25 × agent_σ)² + (0.12 × 0.05)²)   — propagated from K=8 Monte Carlo agent samples
 ```
+
+The displayed score is `total ± σ` (e.g. "74 fit ±6"). The bandit uses a lower confidence bound reward: `0.6 × llm_critique + 0.4 × max(0, agent_approval − agent_σ)` so uncertain arms are penalised.
 
 **Algorithmic score** (deterministic, fast):
 
@@ -79,7 +93,7 @@ total = 0.58 × algorithmic  +  0.25 × agent_approval  +  0.12 × llm_critique 
 | `novelty_editor` | all stops in same category |
 | `budget_realist` | a stop exceeds budget cap |
 
-Approval score = fraction of agents approving × 0.8, plus bonuses for unanimous approval.
+For the final 3 plans, each agent score is also sampled K=8 times with Box-Muller weight perturbation (variance per agent per component is pre-tuned). This produces a σ per agent; the mean σ across agents becomes `agent_approval_sigma`, which is shown as the "Confidence" bar on each card. The bandit context vector is d=28: mood (6) + weather (4) + budget (3) + time/stimulation (2) + agent scores (5) + flaneur profile (8).
 
 **LLM critique** — OpenRouter (default: `openai/gpt-4o-mini`) receives context, place list, and computed metrics. It returns a 0–1 coherence score plus plain-language caveats that are appended to the itinerary. Falls back to a deterministic heuristic critic if no API key is set.
 

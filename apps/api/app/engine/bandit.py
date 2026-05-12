@@ -3,19 +3,21 @@ LinUCB contextual bandit — learns which plan archetypes work for each user-con
 
 Arms: "<primary_category>_<effort_tier>" strings  (e.g. "cafe_low", "museum_medium")
 
-Context vector (d=20):
+Context vector (d=28):
   mood one-hot       [6]   calm / curious / hungry / social / focused / romantic
   weather one-hot    [4]   good / cloudy / wet / extreme
   budget             [3]   low / medium / high
   time budget        [1]   available_minutes normalised to [0,1]
   stimulation        [1]   stimulation_level normalised to [0,1]
   agent scores       [5]   per-agent approval scores from the simulated panel
+  profile            [8]   pace, social_comfort, familiarity, discovery,
+                           mobility, spend_strictness, visitor_type, origin_region
 
 Agent scores are context features so LinUCB learns which agents are predictive
 of high LLM reward in each user-context situation — effectively learning the
 per-context reliability of each simulated persona.
 
-Reward: 0.6 × llm_critique + 0.4 × agent_approval, fed back after LLM scoring.
+Reward: 0.6 × llm_critique + 0.4 × (agent_approval - sigma), fed back after LLM scoring.
 
 A_inv is maintained via Sherman-Morrison rank-1 updates (no numpy required, O(d²) per step).
 Arm parameters are persisted to JSON between requests so the bandit accumulates
@@ -32,7 +34,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from app.models.schemas import HyperContext
 
-FEATURE_DIM: int = 20
+FEATURE_DIM: int = 28
 ALPHA: float = 0.8  # UCB exploration coefficient; lower → more exploit, higher → more explore
 _WEIGHTS_FILE = Path(__file__).parent.parent / "data" / "bandit_weights.json"
 
@@ -152,14 +154,21 @@ class LinUCBBandit:
     def _load(self) -> None:
         try:
             raw = json.loads(_WEIGHTS_FILE.read_text())
-            for arm_id, arm_data in raw.items():
+            if raw.get("_version") != self.d:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Bandit weights dimension mismatch (file=%s, expected=%d) — cold start",
+                    raw.get("_version"), self.d,
+                )
+                return
+            for arm_id, arm_data in raw.get("arms", {}).items():
                 self._arms[arm_id] = LinUCBArm.from_dict(self.d, arm_data)
         except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
             pass  # cold start — all arms initialise fresh on first access
 
     def _save(self) -> None:
         _WEIGHTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        payload = {arm_id: arm.to_dict() for arm_id, arm in self._arms.items()}
+        payload = {"_version": self.d, "arms": {arm_id: arm.to_dict() for arm_id, arm in self._arms.items()}}
         _WEIGHTS_FILE.write_text(json.dumps(payload, separators=(",", ":")))
 
 
@@ -189,11 +198,11 @@ def encode_context_and_agents(
     agent_scores: dict[str, float],
 ) -> list[float]:
     """
-    Build the 20-dim context feature vector.
+    Build the 28-dim context feature vector.
 
     Combining user-level signals (mood, weather, budget, time, stimulation) with
-    plan-level agent approval scores lets the bandit learn which agent approval
-    patterns are predictive of high LLM reward in each user situation.
+    plan-level agent approval scores and flaneur profile lets the bandit learn which
+    agent approval patterns are predictive of high LLM reward in each user situation.
     """
     from app.models.schemas import Budget, Mood, WeatherCondition
 
@@ -220,7 +229,22 @@ def encode_context_and_agents(
     for name in _AGENT_NAMES:
         x.append(float(agent_scores.get(f"agent_{name}", 0.5)))       # [15:20]
 
-    return x  # len == FEATURE_DIM == 20
+    # Profile dims [20:28] — defaults used when profile is None (skipped onboarding)
+    p = context.profile
+    x += [
+        {"meander": 0.0, "moderate": 0.5, "purposeful": 1.0}.get(p.pace.value if p else "moderate", 0.5),
+        {"introvert": 0.0, "ambivert": 0.5, "extrovert": 1.0}.get(p.social_comfort.value if p else "ambivert", 0.5),
+        {"tourist": 0.0, "occasional": 0.5, "local": 1.0}.get(p.familiarity.value if p else "occasional", 0.5),
+        {"serendipity": 0.0, "balanced": 0.5, "reliable": 1.0}.get(p.discovery.value if p else "balanced", 0.5),
+        {"standard": 0.0, "prefers_flat": 0.5, "limited": 1.0}.get(p.mobility.value if p else "standard", 0.0),
+        {"anything": 0.0, "conscious": 0.5, "strict": 1.0}.get(p.spend_strictness.value if p else "conscious", 0.5),
+        {"resident": 0.0, "student": 0.33, "international_student": 0.67, "visitor": 1.0}.get(
+            p.visitor_type.value if p else "resident", 0.0),
+        {"local": 0.0, "north_america": 0.2, "europe": 0.4, "asia": 0.6, "latin_america": 0.8, "rest_of_world": 1.0}.get(
+            p.origin_region.value if p else "local", 0.0),
+    ]  # [20:28]
+
+    return x  # len == FEATURE_DIM == 28
 
 
 # ---------------------------------------------------------------------------

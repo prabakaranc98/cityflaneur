@@ -151,7 +151,29 @@ def recommend_itineraries(
         if on_progress:
             on_progress(stage, msg)
 
+    # Derive time_signals server-side if the client didn't supply them
+    if not context.time_signals:
+        from app.engine.urban_rhythm import classify_day_type, minutes_to_sunset_ny
+        from app.engine.time import effective_datetime as _edt
+        _dt = _edt(context.local_datetime)
+        context = context.model_copy(update={"time_signals": {
+            "hour_of_day": _dt.hour,
+            "day_of_week": _dt.weekday(),
+            "is_rush_hour": classify_day_type(_dt) == "weekday_rush",
+            "minutes_to_sunset": minutes_to_sunset_ny(_dt),
+            "is_weekend": _dt.weekday() >= 5,
+        }})
+
     exploration_factor = EXPLORATION_FACTOR.get(context.mood, 1.0)
+    if context.profile:
+        disc = context.profile.discovery.value
+        if disc == "serendipity":
+            exploration_factor = min(exploration_factor * 1.3, 2.0)
+        elif disc == "reliable":
+            exploration_factor = max(exploration_factor * 0.7, 0.8)
+        # Students stay closer to budget-friendly inner radius
+        if context.profile.visitor_type.value == "student":
+            exploration_factor = max(exploration_factor * 0.85, 0.8)
     exploration_radius = min(int(context.mobility_radius_m * exploration_factor), 15000)
 
     if places is not None:
@@ -407,24 +429,37 @@ def _apply_llm_critic(context: HyperContext, option: ItineraryOption) -> Itinera
         for stop in option.stops
     ]
     critic = get_itinerary_critic().review(context, selected, option.scores)
+
+    # Monte Carlo agent scores for uncertainty estimation (final plans only)
+    from app.engine.agents import agent_panel_score as _aps
+    agents_mc = _aps(context, option.scores, run_mc=True, mc_k=8)
+    sigma_agent = float(agents_mc.get("agent_approval_sigma", 0.0))
+    import math as _math
+    sigma_total = _math.sqrt((0.25 * sigma_agent) ** 2 + (0.12 * 0.05) ** 2)
+
     total = (
         0.58 * option.scores["algorithmic_score"]
         + 0.25 * option.scores["agent_approval"]
         + 0.12 * critic.score
         + 0.05 * option.scores["exploration_bonus"]
     )
-    new_scores = {**option.scores, "llm_critique": critic.score, "total": round(max(0.0, min(1.0, total)), 4)}
+    new_scores = {
+        **option.scores,
+        "llm_critique": critic.score,
+        "total": round(max(0.0, min(1.0, total)), 4),
+        "total_uncertainty": round(sigma_total, 4),
+        "agent_approval_sigma": round(sigma_agent, 4),
+    }
     new_caveats = dedupe_strings(list(option.caveats) + critic.caveats)
     new_explanation = option.explanation.replace("pending", critic.provider)
 
-    # Bandit reward update: LLM critique is the primary signal; agent approval is secondary.
-    # Agent scores from option.scores are re-used as context features so the bandit learns
-    # which agent approval patterns are reliable predictors per user context.
+    # Bandit reward uses lower confidence bound so uncertainty penalises noisy arms.
     from app.engine.bandit import arm_id_for_places, encode_context_and_agents, get_bandit
     agent_scores = {k: v for k, v in option.scores.items() if k.startswith("agent_") and isinstance(v, float)}
     x = encode_context_and_agents(context, agent_scores)
     arm = arm_id_for_places(selected, int(option.total_walking_m), context.mobility_radius_m)
-    reward = 0.6 * critic.score + 0.4 * float(option.scores.get("agent_approval", 0.5))
+    agent_approval_lcb = float(option.scores.get("agent_approval", 0.5)) - sigma_agent
+    reward = 0.6 * critic.score + 0.4 * max(0.0, agent_approval_lcb)
     get_bandit().update(arm, x, reward)
 
     return option.model_copy(update={
@@ -624,7 +659,25 @@ def individual_place_score(context: HyperContext, place: Place, cursor) -> float
         crowd_fit = crowd_penalty
     else:
         crowd_fit = 1.0 - crowd_penalty
+    # Apply urban-rhythm crowd multiplier (time-of-day × neighborhood)
+    from app.engine.urban_rhythm import crowd_multiplier
+    from app.engine.time import effective_datetime as _edt_place
+    _dt_place = _edt_place(context.local_datetime)
+    _mult = crowd_multiplier(place.neighborhood, _dt_place)
+    if context.stimulation_level < 4:
+        crowd_fit = max(0.0, crowd_fit / max(_mult, 0.1))
+    else:
+        crowd_fit = min(1.0, crowd_fit * _mult)
     quality = place.rating / 5.0
+    if context.profile:
+        social_factor = {"introvert": 1.6, "ambivert": 1.0, "extrovert": 0.6}[context.profile.social_comfort.value]
+        crowd_fit = max(0.0, min(1.0, crowd_fit * social_factor))
+        if context.profile.mobility.value == "limited":
+            distance_fit = max(0.0, 1.0 - distance / max(context.mobility_radius_m * 0.6, 1))
+        # Visitors and international students: boost landmark/scenic places
+        if context.profile.visitor_type.value in ("visitor", "international_student"):
+            if place.category.value in ("landmark", "scenic", "museum"):
+                quality = min(1.0, quality * 1.2)
     return (
         0.32 * mood_fit
         + 0.26 * interest_fit
@@ -654,6 +707,13 @@ def score_itinerary(
     weather_fit = average(place_weather_fit(context, place) for place in selected)
     quality = average(place.rating / 5.0 for place in selected)
     novelty = average(float(place.quality_signals.get("local_value", 0.6)) for place in selected)
+    if context.profile:
+        fam_mod = {"tourist": 0.6, "occasional": 1.0, "local": 1.5}[context.profile.familiarity.value]
+        disc_mod = {"serendipity": 1.3, "balanced": 1.0, "reliable": 0.7}[context.profile.discovery.value]
+        # Visitors/intl students: treat as tourist regardless of familiarity selection
+        if context.profile.visitor_type.value in ("visitor", "international_student"):
+            fam_mod = min(fam_mod, 0.6)
+        novelty = min(1.0, novelty * fam_mod * disc_mod)
     diversity = len({place.category for place in selected}) / max(len(selected), 1)
     crowd_fit = average(1.0 - float(place.quality_signals.get("crowd_risk", 0.4)) for place in selected)
     budget_fit = budget_fit_score(context, selected)
@@ -701,6 +761,11 @@ def interest_needles(context: HyperContext) -> list[str]:
 
 
 def place_weather_fit(context: HyperContext, place: Place) -> float:
+    # Near sunset: prefer indoor stops
+    if context.time_signals:
+        mins_sunset = float(context.time_signals.get("minutes_to_sunset", -1))
+        if 0.0 <= mins_sunset <= 45.0:
+            return 1.0 if place.indoor else 0.4
     if context.weather in {WeatherCondition.rain, WeatherCondition.snow, WeatherCondition.cold, WeatherCondition.hot}:
         return 1.0 if place.indoor or "rain_safe" in place.atmosphere_tags else 0.25
     if context.weather == WeatherCondition.windy:

@@ -22,12 +22,14 @@ import {
   SunMedium,
   ThermometerSun,
   Trees,
+  UserCog,
   UserRound,
   UsersRound,
   WalletCards
 } from "lucide-react";
 import type { Budget, GroupMode, HyperContext, Interest, Mood, Weather } from "@/types/cityflaneur";
 import type { ProgressEvent } from "@/lib/api";
+import { fetchWeatherAndTime } from "@/lib/weather";
 import { HowItWorks } from "@/components/HowItWorks";
 
 const moods = [
@@ -84,14 +86,17 @@ type Props = {
   logEvents: ProgressEvent[];
   onChange: (context: HyperContext) => void;
   onSubmit: () => void;
+  onOpenProfile?: () => void;
   onLocationFound?: (location: { lat: number; lng: number }) => void;
 };
 
-export function BentoControls({ context, loading, logEvents, onChange, onSubmit, onLocationFound }: Props) {
+export function BentoControls({ context, loading, logEvents, onChange, onSubmit, onOpenProfile, onLocationFound }: Props) {
   const [geoBusy, setGeoBusy] = useState(false);
   const [geoLabel, setGeoLabel] = useState("Detecting location…");
   const [geoLocked, setGeoLocked] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
+  const [weatherLabel, setWeatherLabel] = useState<string | null>(null);
+  const [hasManualWeather, setHasManualWeather] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
 
   // Auto-request GPS on mount — just updates map center, does not submit
@@ -137,6 +142,17 @@ export function BentoControls({ context, loading, logEvents, onChange, onSubmit,
         setGeoLocked(true);
         setGeoBusy(false);
         if (onLocationFound) onLocationFound(nextLocation);
+        // Auto-detect weather unless user has manually chosen one
+        fetchWeatherAndTime(nextLocation.lat, nextLocation.lng).then((result) => {
+          setWeatherLabel(result.label);
+          if (!hasManualWeather) {
+            patch({
+              weather: result.condition,
+              weather_auto_detected: true,
+              time_signals: result.time_signals,
+            });
+          }
+        });
       },
       (error) => {
         setGeoLabel(geolocationErrorMessage(error) + " — using midtown default");
@@ -154,6 +170,17 @@ export function BentoControls({ context, loading, logEvents, onChange, onSubmit,
           <h1>Manhattan now</h1>
         </div>
         <div className="control-header-actions">
+          {onOpenProfile ? (
+            <button
+              className="icon-btn"
+              type="button"
+              title="Your flaneur profile"
+              aria-label="Your flaneur profile"
+              onClick={onOpenProfile}
+            >
+              <UserCog size={17} aria-hidden="true" />
+            </button>
+          ) : null}
           <button
             className="icon-btn"
             type="button"
@@ -266,7 +293,12 @@ export function BentoControls({ context, loading, logEvents, onChange, onSubmit,
         </div>
 
         <div className="bento-block wide">
-          <label>Weather</label>
+          <label>
+            Weather
+            {weatherLabel && !hasManualWeather ? (
+              <span className="weather-auto-pill" title={weatherLabel}>Auto</span>
+            ) : null}
+          </label>
           <div className="chip-grid">
             {weather.map((item) => {
               const Icon = item.icon;
@@ -274,7 +306,7 @@ export function BentoControls({ context, loading, logEvents, onChange, onSubmit,
                 <button
                   key={item.value}
                   className={context.weather === item.value ? "chip active" : "chip"}
-                  onClick={() => patch({ weather: item.value })}
+                  onClick={() => { setHasManualWeather(true); patch({ weather: item.value, weather_auto_detected: false }); }}
                   type="button"
                 >
                   <Icon aria-hidden="true" />

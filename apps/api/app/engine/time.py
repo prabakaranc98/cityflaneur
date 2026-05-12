@@ -19,9 +19,13 @@ def effective_datetime(value: datetime | None) -> datetime:
 
 
 def is_place_open(place: Place, at: datetime | None) -> bool:
+    from app.engine.urban_rhythm import is_seasonally_open
+    local = effective_datetime(at)
+    seasonal = is_seasonally_open(place.name, local)
+    if seasonal is False:
+        return False
     if not place.opening_hours:
         return True
-    local = effective_datetime(at)
     day_key = DAYS[local.weekday()]
     windows = place.opening_hours.get(day_key, []) + place.opening_hours.get("daily", [])
     if not windows:
