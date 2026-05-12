@@ -150,6 +150,42 @@ uv run python scripts/test_providers.py  # provider smoke test
 
 The simulator runs representative Manhattan personas across mood, weather, budget, and group context combinations to catch recommendation failures before deployment.
 
+## Next Steps — Algorithmic
+
+The current engine is functional but uses several approximations worth replacing as the system matures.
+
+### Routing
+
+**Real pedestrian routing** — walk times are currently haversine × 1.18 Manhattan grid bias. Plugging in [OSRM](https://project-osrm.org/) or [Valhalla](https://valhalla.github.io/valhalla/) would give exact sidewalk-aware travel times including one-way streets, park cuts, and bridge crossings. This is the single highest-leverage improvement to itinerary quality.
+
+**Real transit data** — the subway model uses ~65 hardcoded station coordinates with a flat 500 m·min⁻¹ ride speed. Replacing this with live [MTA GTFS-RT](https://api.mta.info/) feeds would capture actual headways, transfers, and real-time delays. The leg-time formula is already structured for a drop-in replacement.
+
+### Search
+
+**Local search post-beam** — beam search is greedy: it never revisits a committed stop. A 2-opt or 3-opt local search pass over each candidate plan (swapping or removing stops) would escape greedy local optima without the exponential cost of full enumeration. The problem is a constrained variant of the [orienteering problem](https://en.wikipedia.org/wiki/Orienteering_problem); approximate solvers (LKH-style) can close 90% of the gap in milliseconds.
+
+**Learned beam width** — fixed width-10 beams waste compute when the top-1 candidate is already dominant. A bandit over beam widths (4 / 10 / 20) could allocate compute to contexts where diversity matters (e.g. open-ended "surprise me" moods) and cut it for constrained contexts (strict budget + short window).
+
+### Scoring
+
+**Learned scoring weights** — the 11-component algorithmic weights (22% context fit, 16% effort, etc.) are hand-tuned. Even a small offline dataset of accepted vs. rejected plans would let a linear model or Bradley–Terry ranker recover weights that better reflect actual user preferences without any architectural change.
+
+**Time-of-day POI scoring** — the engine currently gates places by opening hours but does not prefer cafes in the morning, lunch spots at noon, or bars after 18:00. A time-of-day multiplier over place categories (keyed to `context.available_minutes` + current hour) would surface more temporally coherent routes.
+
+**Dynamic crowd signals** — `crowd_risk` is a static per-place label. Wikipedia pageview velocity, Foursquare check-in density, or OSM `crowd_source` tags could give a live proxy for expected busyness at a given time.
+
+### Exploration and Diversity
+
+**Contextual bandits** — the SHA-1 exploration bonus is purely pseudo-random. A contextual multi-armed bandit (e.g. LinUCB keyed on mood × time-of-day × neighborhood) would surface under-explored place combinations when the model is uncertain and exploit known-good routes when it is confident. This replaces the flat 5% exploration weight.
+
+**Pareto-optimal slate selection** — the current three-plan diversity filter (no shared first stop, < 34% overlap) is a post-hoc deduplication heuristic. Treating plan selection as a submodular coverage problem — maximize joint diversity subject to each plan being individually good — would produce slates where the three options are maximally complementary across mood, effort, and category dimensions.
+
+### Personalization
+
+**Preference learning** — there is no feedback store yet. Adding a lightweight signal (accept / modify / reject on a returned itinerary) and training a collaborative filter or matrix factorization over (user, place_category, mood) tuples would let the engine cold-start on OSM tags and warm-start on observed choices.
+
+**LLM-in-the-loop construction** — the LLM currently acts only as a post-hoc critic. A more active role — using the LLM to propose alternative first stops when the beam produces homogeneous routes, or to resolve soft constraints from the free-text note that rule-based parsing misses — would make the note field meaningfully affect plan structure, not just the critique text.
+
 ## Docs
 
 - [Backend guide](docs/backend.md): API flow, recommendation logic, local spin-up, and validation.
