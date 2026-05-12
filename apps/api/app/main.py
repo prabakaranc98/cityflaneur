@@ -51,6 +51,14 @@ def cache_info_endpoint() -> dict[str, object]:
     return cache_info()
 
 
+@app.get("/api/admin/bandit-stats")
+def bandit_stats_endpoint() -> dict[str, object]:
+    """Return per-arm update counts for the LinUCB exploration bandit."""
+    from app.engine.bandit import get_bandit
+    bandit = get_bandit()
+    return {"alpha": bandit.alpha, "feature_dim": bandit.d, "arms": bandit.arm_stats()}
+
+
 @app.post("/api/context/parse", response_model=HyperContext)
 def parse_context_endpoint(request: ContextParseRequest) -> HyperContext:
     return parse_context(request)

@@ -269,7 +269,12 @@ def build_option_from_plan(
         critic_provider = critic.provider
         critic_caveats = critic.caveats
 
-    exploration = route_exploration_bonus(context, selected, plan.search_seed)
+    from app.engine.bandit import arm_id_for_places, encode_context_and_agents, get_bandit
+    bandit = get_bandit()
+    x = encode_context_and_agents(context, agents)
+    arm = arm_id_for_places(selected, distance_m, context.mobility_radius_m)
+    exploration = bandit.score_arm(arm, x)
+
     algorithmic_score = metrics["algorithmic_score"]
     total = (
         0.58 * algorithmic_score
@@ -304,7 +309,11 @@ def build_option_from_plan(
 
 
 def _apply_llm_critic(context: HyperContext, option: ItineraryOption) -> ItineraryOption:
-    """Run LLM critic on a pre-built option (called only for the final shortlist)."""
+    """Run LLM critic on a pre-built option (called only for the final shortlist).
+
+    After scoring, feeds reward back to the LinUCB bandit so it learns which
+    plan archetypes earn high LLM + agent scores in each user-context pattern.
+    """
     from app.models.schemas import Place as _Place
     selected = [
         _Place(
@@ -336,6 +345,17 @@ def _apply_llm_critic(context: HyperContext, option: ItineraryOption) -> Itinera
     new_scores = {**option.scores, "llm_critique": critic.score, "total": round(max(0.0, min(1.0, total)), 4)}
     new_caveats = dedupe_strings(list(option.caveats) + critic.caveats)
     new_explanation = option.explanation.replace("pending", critic.provider)
+
+    # Bandit reward update: LLM critique is the primary signal; agent approval is secondary.
+    # Agent scores from option.scores are re-used as context features so the bandit learns
+    # which agent approval patterns are reliable predictors per user context.
+    from app.engine.bandit import arm_id_for_places, encode_context_and_agents, get_bandit
+    agent_scores = {k: v for k, v in option.scores.items() if k.startswith("agent_") and isinstance(v, float)}
+    x = encode_context_and_agents(context, agent_scores)
+    arm = arm_id_for_places(selected, int(option.total_walking_m), context.mobility_radius_m)
+    reward = 0.6 * critic.score + 0.4 * float(option.scores.get("agent_approval", 0.5))
+    get_bandit().update(arm, x, reward)
+
     return option.model_copy(update={
         "scores": new_scores,
         "caveats": new_caveats,
