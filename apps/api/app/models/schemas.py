@@ -77,7 +77,7 @@ class ContextParseRequest(BaseModel):
     stimulation_level: int | None = Field(default=None, ge=1, le=5)
     budget: Budget | None = None
     group_mode: GroupMode | None = None
-    mobility_radius_m: int | None = Field(default=None, ge=500, le=8000)
+    mobility_radius_m: int | None = Field(default=None, ge=500, le=15000)
     interests: list[Interest] | None = None
     note: str | None = Field(default=None, max_length=800)
 
@@ -93,7 +93,7 @@ class HyperContext(BaseModel):
     stimulation_level: int = Field(default=2, ge=1, le=5)
     budget: Budget = Budget.low
     group_mode: GroupMode = GroupMode.solo
-    mobility_radius_m: int = Field(default=2600, ge=500, le=8000)
+    mobility_radius_m: int = Field(default=2600, ge=500, le=15000)
     interests: list[Interest] = Field(default_factory=list)
     note: str | None = Field(default=None, max_length=800)
     parsed_signals: dict[str, str | int | float | bool | list[str]] = Field(default_factory=dict)

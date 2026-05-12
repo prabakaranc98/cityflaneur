@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+import json
+import queue as _queue
+import threading
 from datetime import datetime
 
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from app.core.config import get_settings
 from app.data.seed import SEED_PLACES
@@ -71,6 +76,59 @@ def recommendations_endpoint(context: HyperContext) -> RecommendationsResponse:
         recommendations=recommend_itineraries(context),
         catalog_version=settings.default_catalog_version,
         generated_at=datetime.utcnow(),
+    )
+
+
+@app.post("/api/recommendations/stream")
+async def recommendations_stream_endpoint(context: HyperContext) -> StreamingResponse:
+    """SSE endpoint: yields pipeline progress events then the final result.
+
+    Each event is a JSON line: data: {"stage": "...", "msg": "..."}\\n\\n
+    The terminal event has stage="done" and a "result" key with the full response.
+    """
+    event_queue: _queue.Queue[dict | None] = _queue.Queue()
+    result_store: list[RecommendationsResponse] = []
+
+    def run() -> None:
+        try:
+            def on_progress(stage: str, msg: str) -> None:
+                event_queue.put({"stage": stage, "msg": msg})
+
+            recs = recommend_itineraries(context, on_progress=on_progress)
+            result_store.append(
+                RecommendationsResponse(
+                    context=context,
+                    recommendations=recs,
+                    catalog_version=settings.default_catalog_version,
+                    generated_at=datetime.utcnow(),
+                )
+            )
+        except Exception as exc:
+            event_queue.put({"stage": "error", "msg": str(exc)})
+        finally:
+            event_queue.put(None)  # sentinel
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+
+    async def generate():
+        while True:
+            try:
+                event = event_queue.get_nowait()
+            except _queue.Empty:
+                await asyncio.sleep(0.05)
+                continue
+            if event is None:
+                if result_store:
+                    payload = result_store[0].model_dump(mode="json")
+                    yield f"data: {json.dumps({'stage': 'done', 'result': payload})}\n\n"
+                break
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 

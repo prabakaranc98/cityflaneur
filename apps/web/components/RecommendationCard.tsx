@@ -9,23 +9,37 @@ type Props = {
   selected: boolean;
   context: HyperContext;
   sessionId: string;
+  rank: number;
   onSelect: () => void;
 };
 
-export function RecommendationCard({ option, selected, context, sessionId, onSelect }: Props) {
+function rangeLabel(explorationFraction: number): { text: string; className: string } {
+  if (explorationFraction >= 0.5) return { text: "Beyond range", className: "range-label beyond" };
+  if (explorationFraction >= 0.15) return { text: "Stretches range", className: "range-label stretch" };
+  return { text: "Within range", className: "range-label within" };
+}
+
+export function RecommendationCard({ option, selected, context, sessionId, rank, onSelect }: Props) {
   async function feedback(action: "save" | "dismiss" | "started_route" | "completed") {
     await sendFeedback(sessionId, option, action, context);
   }
+
+  const explorationFraction = (option.scores as Record<string, number>).exploration_fraction ?? 0;
+  const range = rangeLabel(explorationFraction);
 
   return (
     <article className={selected ? "recommendation-card selected" : "recommendation-card"}>
       <button className="card-select" type="button" onClick={onSelect}>
         <span>
+          <span className="rank-badge" aria-label={`Rank ${rank}`}>{rank}</span>
           <small>{Math.round(option.scores.total * 100)} fit</small>
           {option.title}
         </span>
         <Navigation aria-hidden="true" />
       </button>
+      <div className="card-meta">
+        <span className={range.className}>{range.text}</span>
+      </div>
       <p>{option.explanation}</p>
       <div className="metrics">
         <span>

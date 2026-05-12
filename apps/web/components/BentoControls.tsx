@@ -1,15 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   BookOpen,
   Building2,
+  CheckCircle2,
   CloudRain,
   CloudSun,
   Cloudy,
   Coffee,
   Eye,
   Gauge,
+  Info,
   Landmark,
   Loader2,
   LocateFixed,
@@ -25,6 +27,8 @@ import {
   WalletCards
 } from "lucide-react";
 import type { Budget, GroupMode, HyperContext, Interest, Mood, Weather } from "@/types/cityflaneur";
+import type { ProgressEvent } from "@/lib/api";
+import { HowItWorks } from "@/components/HowItWorks";
 
 const moods = [
   { label: "Calm", value: "calm", icon: Moon },
@@ -77,13 +81,28 @@ const MANHATTAN_BOUNDS = {
 type Props = {
   context: HyperContext;
   loading: boolean;
+  logEvents: ProgressEvent[];
   onChange: (context: HyperContext) => void;
   onSubmit: () => void;
+  onLocationFound?: (location: { lat: number; lng: number }) => void;
 };
 
-export function BentoControls({ context, loading, onChange, onSubmit }: Props) {
+export function BentoControls({ context, loading, logEvents, onChange, onSubmit, onLocationFound }: Props) {
   const [geoBusy, setGeoBusy] = useState(false);
-  const [geoStatus, setGeoStatus] = useState("Manual start");
+  const [geoLabel, setGeoLabel] = useState("Detecting location…");
+  const [geoLocked, setGeoLocked] = useState(false);
+  const [showInfo, setShowInfo] = useState(false);
+  const logEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-request GPS on mount — just updates map center, does not submit
+  useEffect(() => {
+    requestBrowserLocation();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [logEvents]);
 
   function patch(update: Partial<HyperContext>) {
     onChange({ ...context, ...update });
@@ -98,12 +117,11 @@ export function BentoControls({ context, loading, onChange, onSubmit }: Props) {
 
   function requestBrowserLocation() {
     if (!navigator.geolocation) {
-      setGeoStatus("GPS unavailable in this browser");
+      setGeoLabel("GPS unavailable — using midtown default");
       return;
     }
-
     setGeoBusy(true);
-    setGeoStatus("Locating");
+    setGeoLabel("Detecting location…");
     navigator.geolocation.getCurrentPosition(
       (position) => {
         const nextLocation = {
@@ -111,24 +129,17 @@ export function BentoControls({ context, loading, onChange, onSubmit }: Props) {
           lng: Number(position.coords.longitude.toFixed(5))
         };
         if (!isWithinManhattanBounds(nextLocation)) {
-          setGeoStatus("GPS outside Manhattan MVP");
+          setGeoLabel("Outside Manhattan — using midtown default");
           setGeoBusy(false);
           return;
         }
-
-        patch({
-          location: nextLocation,
-          parsed_signals: {
-            ...(context.parsed_signals ?? {}),
-            location_source: "browser_gps",
-            location_accuracy_m: Math.round(position.coords.accuracy)
-          }
-        });
-        setGeoStatus(`GPS +- ${Math.round(position.coords.accuracy)}m`);
+        setGeoLabel(`GPS locked  ±${Math.round(position.coords.accuracy)} m`);
+        setGeoLocked(true);
         setGeoBusy(false);
+        if (onLocationFound) onLocationFound(nextLocation);
       },
       (error) => {
-        setGeoStatus(geolocationErrorMessage(error));
+        setGeoLabel(geolocationErrorMessage(error) + " — using midtown default");
         setGeoBusy(false);
       },
       { enableHighAccuracy: true, maximumAge: 60_000, timeout: 10_000 }
@@ -142,8 +153,20 @@ export function BentoControls({ context, loading, onChange, onSubmit }: Props) {
           <p>Cityflaneur</p>
           <h1>Manhattan now</h1>
         </div>
-        <MapPin aria-hidden="true" />
+        <div className="control-header-actions">
+          <button
+            className="icon-btn"
+            type="button"
+            title="How it works"
+            aria-label="How it works"
+            onClick={() => setShowInfo(true)}
+          >
+            <Info size={17} aria-hidden="true" />
+          </button>
+          <MapPin aria-hidden="true" />
+        </div>
       </div>
+      {showInfo ? <HowItWorks onClose={() => setShowInfo(false)} /> : null}
 
       <div className="context-strip" aria-label="Current context">
         <span>
@@ -162,35 +185,21 @@ export function BentoControls({ context, loading, onChange, onSubmit }: Props) {
 
       <div className="bento-grid">
         <div className="bento-block wide">
-          <label>Start</label>
-          <div className="location-tools">
-            <button className="gps-button" type="button" onClick={requestBrowserLocation} disabled={geoBusy}>
-              {geoBusy ? <Loader2 className="spin" aria-hidden="true" /> : <LocateFixed aria-hidden="true" />}
-              Use GPS
+          <div className="location-chip" aria-label="Current location">
+            <button
+              className={`location-chip-btn${geoLocked ? " locked" : ""}`}
+              type="button"
+              onClick={requestBrowserLocation}
+              disabled={geoBusy}
+              title="Re-detect GPS location"
+            >
+              {geoBusy
+                ? <Loader2 size={14} className="spin" aria-hidden="true" />
+                : <LocateFixed size={14} aria-hidden="true" />}
             </button>
-            <span className={geoStatus.includes("outside") || geoStatus.includes("unavailable") ? "location-status warning" : "location-status"}>
-              {geoStatus}
+            <span className={`location-chip-label${geoLocked ? "" : " muted"}`}>
+              {geoLabel}
             </span>
-          </div>
-          <div className="location-row">
-            <input
-              type="number"
-              step="0.0001"
-              value={context.location.lat}
-              onChange={(event) =>
-                patch({ location: { ...context.location, lat: Number(event.target.value) } })
-              }
-              aria-label="Latitude"
-            />
-            <input
-              type="number"
-              step="0.0001"
-              value={context.location.lng}
-              onChange={(event) =>
-                patch({ location: { ...context.location, lng: Number(event.target.value) } })
-              }
-              aria-label="Longitude"
-            />
           </div>
         </div>
 
@@ -214,8 +223,8 @@ export function BentoControls({ context, loading, onChange, onSubmit }: Props) {
             id="radius"
             type="range"
             min={500}
-            max={8000}
-            step={100}
+            max={15000}
+            step={250}
             value={context.mobility_radius_m}
             onChange={(event) => patch({ mobility_radius_m: Number(event.target.value) })}
           />
@@ -340,9 +349,28 @@ export function BentoControls({ context, loading, onChange, onSubmit }: Props) {
       </div>
 
       <button className="primary-action" type="button" disabled={loading} onClick={onSubmit}>
-        {loading ? "Finding routes" : "Find three options"}
-        <UsersRound aria-hidden="true" />
+        {loading ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
+        {loading ? "Searching…" : "Find three options"}
+        {!loading ? <UsersRound aria-hidden="true" /> : null}
       </button>
+
+      {(loading || logEvents.length > 0) ? (
+        <div className="progress-log" aria-live="polite" aria-label="Pipeline progress">
+          {logEvents.map((event, i) => (
+            <div key={i} className="log-line">
+              <CheckCircle2 size={13} className="log-icon done" aria-hidden="true" />
+              <span>{event.msg}</span>
+            </div>
+          ))}
+          {loading ? (
+            <div className="log-line active">
+              <Loader2 size={13} className="spin log-icon" aria-hidden="true" />
+              <span>Working…</span>
+            </div>
+          ) : null}
+          <div ref={logEndRef} />
+        </div>
+      ) : null}
     </section>
   );
 }

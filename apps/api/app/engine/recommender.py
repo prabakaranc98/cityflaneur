@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 from hashlib import sha1
+from typing import Callable
+
+ProgressCallback = Callable[[str, str], None] | None
 
 from app.data.seed import SEED_PLACES
 from app.engine.agents import agent_panel_score
@@ -30,6 +33,16 @@ from app.models.schemas import (
     WeatherCondition,
 )
 
+
+# How far beyond the mobility radius each mood is willing to venture (multiplier)
+EXPLORATION_FACTOR: dict[Mood, float] = {
+    Mood.curious: 1.6,
+    Mood.romantic: 1.4,
+    Mood.social: 1.3,
+    Mood.calm: 1.1,
+    Mood.focused: 1.0,
+    Mood.hungry: 1.0,
+}
 
 BUDGET_MAX_PRICE = {
     Budget.free: 0,
@@ -132,29 +145,77 @@ def recommend_itineraries(
     context: HyperContext,
     places: list[Place] | None = None,
     limit: int = 3,
+    on_progress: ProgressCallback = None,
 ) -> list[ItineraryOption]:
+    def emit(stage: str, msg: str) -> None:
+        if on_progress:
+            on_progress(stage, msg)
+
+    exploration_factor = EXPLORATION_FACTOR.get(context.mood, 1.0)
+    exploration_radius = min(int(context.mobility_radius_m * exploration_factor), 15000)
+
     if places is not None:
         catalog = places
+        inner_places = catalog
+        outer_places: list[Place] = []
+        emit("osm_done", f"Using {len(catalog)} provided places")
     else:
-        from app.data.poi_cache import pois_for_context
+        from app.data.poi_cache import pois_for_context, cache_info
+        emit("osm_start", "Querying OpenStreetMap for places near you…")
+        # Fetch at exploration radius; mood-dependent moods venture farther
         osm_places = pois_for_context(
-            context.location.lat, context.location.lng, context.mobility_radius_m
+            context.location.lat, context.location.lng, exploration_radius
         )
+        info = cache_info()
+        hit = info["hits"] > 0
+        status = "cached" if hit else "live fetch"
         catalog = osm_places if len(osm_places) >= 8 else SEED_PLACES
-    candidates = feasible_places(context, catalog)
+        inner_places = [
+            p for p in catalog
+            if haversine_m(context.location, p.coordinates) <= context.mobility_radius_m
+        ]
+        outer_places = [
+            p for p in catalog
+            if haversine_m(context.location, p.coordinates) > context.mobility_radius_m
+        ]
+        emit(
+            "osm_done",
+            f"Loaded {len(catalog)} places ({status}): "
+            f"{len(inner_places)} within range, {len(outer_places)} beyond",
+        )
+
+    # Exploitation candidates: places within mobility radius
+    candidates = feasible_places(context, inner_places if inner_places else catalog)
     if len(candidates) < 6:
         candidates = relaxed_feasible_places(context, catalog)
+    emit("candidates_start", f"Running beam search across {len(candidates)} candidates…")
 
     plans = generate_candidate_plans(context, candidates)
+
+    # Exploration beams: venture beyond radius for moods that call for it
+    if outer_places and exploration_factor > 1.0:
+        outer_eligible = _exploration_eligible(context, outer_places)
+        if outer_eligible:
+            exploration_plans = _generate_exploration_plans(context, candidates, outer_eligible)
+            plans = plans + exploration_plans
+
+    emit("candidates_done", f"Built {len(plans)} candidate plans — scoring with agent panel…")
+
     # Build options without LLM critic first (fast pass)
     options = [option for plan in plans if (option := build_option_from_plan(context, plan, skip_llm=True)) is not None]
     options.sort(key=lambda option: option.scores["total"], reverse=True)
     diverse = diversify(options, limit)
     if len(diverse) < limit:
         diverse.extend(fallback_options(context, candidates, limit - len(diverse), diverse))
+    emit("scoring_done", f"Top {len(diverse)} plans selected — running LLM coherence check…")
+
     # Apply LLM critic only to the final shortlist
-    diverse = [_apply_llm_critic(context, option) for option in diverse[:limit]]
-    return diverse
+    final: list[ItineraryOption] = []
+    for i, option in enumerate(diverse[:limit], 1):
+        emit("llm", f"LLM critique {i}/{min(limit, len(diverse))}…")
+        final.append(_apply_llm_critic(context, option))
+    emit("llm_done", "All routes finalised")
+    return final
 
 
 def generate_candidate_plans(context: HyperContext, candidates: list[Place]) -> list[CandidatePlan]:
@@ -199,10 +260,11 @@ def expand_route_beam(
     first: Place,
     stop_count: int,
     strategy_hint: str | None = None,
+    max_leg_override: int | None = None,
 ) -> list[CandidatePlan]:
     beams: list[tuple[Place, ...]] = [(first,)]
     max_duration = context.available_minutes + 18
-    max_leg = max(900, context.mobility_radius_m * 0.72)
+    max_leg = max_leg_override if max_leg_override is not None else max(900, context.mobility_radius_m * 0.72)
 
     for _ in range(1, stop_count):
         expanded: list[tuple[float, tuple[Place, ...]]] = []
@@ -275,6 +337,14 @@ def build_option_from_plan(
     arm = arm_id_for_places(selected, distance_m, context.mobility_radius_m)
     exploration = bandit.score_arm(arm, x)
 
+    exploration_fraction = round(
+        sum(
+            1 for p in selected
+            if haversine_m(context.location, p.coordinates) > context.mobility_radius_m
+        ) / max(len(selected), 1),
+        4,
+    )
+
     algorithmic_score = metrics["algorithmic_score"]
     total = (
         0.58 * algorithmic_score
@@ -287,6 +357,7 @@ def build_option_from_plan(
         **agents,
         "llm_critique": critic_score,
         "exploration_bonus": round(exploration, 4),
+        "exploration_fraction": exploration_fraction,
         "total": round(max(0.0, min(1.0, total)), 4),
     }
     stop_models = build_stops_from_roles(context, selected, list(plan.roles))
@@ -361,6 +432,64 @@ def _apply_llm_critic(context: HyperContext, option: ItineraryOption) -> Itinera
         "caveats": new_caveats,
         "explanation": new_explanation,
     })
+
+
+def _exploration_eligible(context: HyperContext, outer_places: list[Place]) -> list[Place]:
+    """Filter outer-radius places to budget/hours-eligible ones for exploration beams."""
+    max_price = BUDGET_MAX_PRICE[context.budget]
+    eligible = [
+        p for p in outer_places
+        if p.price_level <= max_price and is_place_open(p, context.local_datetime)
+    ]
+    if context.weather in {WeatherCondition.rain, WeatherCondition.snow}:
+        indoor = [p for p in eligible if p.indoor or "rain_safe" in p.atmosphere_tags]
+        return indoor if len(indoor) >= 2 else eligible[:4]
+    return eligible
+
+
+def _generate_exploration_plans(
+    context: HyperContext,
+    inner_candidates: list[Place],
+    outer_eligible: list[Place],
+) -> list[CandidatePlan]:
+    """Generate plans that venture beyond mobility_radius_m for discovery."""
+    outer_ranked = sorted(
+        outer_eligible,
+        key=lambda p: (
+            text_match_score(p, MOOD_NEEDLES[context.mood])
+            + text_match_score(p, tuple(interest_needles(context)))
+            + p.rating / 5.0
+        ),
+        reverse=True,
+    )[:6]
+
+    inner_pool = sorted(
+        inner_candidates,
+        key=lambda p: individual_place_score(context, p, context.location),
+        reverse=True,
+    )[:8]
+
+    combined = inner_pool + outer_ranked
+    stop_count = min(target_stop_count(context.available_minutes), 3)
+    # Allow legs up to 1.5x the inner radius so outer stops are reachable
+    wide_max_leg = int(context.mobility_radius_m * 1.5)
+
+    plans: list[CandidatePlan] = []
+    for outer_dest in outer_ranked[:4]:
+        # Beam starting from the outer destination (greedy reverse anchor)
+        plans.extend(
+            expand_route_beam(context, combined, outer_dest, stop_count,
+                              strategy_hint="exploration", max_leg_override=wide_max_leg)
+        )
+        # Beam starting from nearest inner place, heading outward
+        for inner_start in inner_pool[:3]:
+            if inner_start.id == outer_dest.id:
+                continue
+            plans.extend(
+                expand_route_beam(context, combined, inner_start, stop_count,
+                                  strategy_hint="exploration", max_leg_override=wide_max_leg)
+            )
+    return plans
 
 
 def feasible_places(context: HyperContext, places: list[Place]) -> list[Place]:
@@ -983,17 +1112,41 @@ def diversify(options: list[ItineraryOption], limit: int) -> list[ItineraryOptio
     selected: list[ItineraryOption] = []
     used_first_stops: set[str] = set()
     used_places: set[str] = set()
-    for option in options:
+    has_explorative = False
+
+    def _fits(option: ItineraryOption) -> bool:
         first_stop = option.stops[0].place_id
         option_places = {stop.place_id for stop in option.stops}
         overlap = len(option_places.intersection(used_places)) / max(len(option_places), 1)
-        if first_stop in used_first_stops or overlap > 0.34:
+        return first_stop not in used_first_stops and overlap <= 0.34
+
+    def _register(option: ItineraryOption) -> None:
+        nonlocal has_explorative
+        used_first_stops.add(option.stops[0].place_id)
+        used_places.update(stop.place_id for stop in option.stops)
+        if option.scores.get("exploration_fraction", 0.0) >= 0.2:
+            has_explorative = True
+
+    for option in options:
+        if not _fits(option):
             continue
+        # For the last slot: if we have no explorative plan yet, try to pick one
+        if len(selected) == limit - 1 and not has_explorative:
+            explorative_candidates = [
+                o for o in options
+                if o.id not in {c.id for c in selected}
+                and o.scores.get("exploration_fraction", 0.0) >= 0.2
+                and _fits(o)
+            ]
+            if explorative_candidates:
+                best = max(explorative_candidates, key=lambda o: o.scores["total"])
+                selected.append(best)
+                return selected
         selected.append(option)
-        used_first_stops.add(first_stop)
-        used_places.update(option_places)
+        _register(option)
         if len(selected) == limit:
             return selected
+
     for option in options:
         if option.id not in {chosen.id for chosen in selected}:
             selected.append(option)

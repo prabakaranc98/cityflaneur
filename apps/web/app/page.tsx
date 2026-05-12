@@ -6,7 +6,7 @@ import { MapPanel } from "@/components/MapPanel";
 import { NeighborhoodPulse } from "@/components/NeighborhoodPulse";
 import { RecommendationCard } from "@/components/RecommendationCard";
 import { StreetScenes } from "@/components/StreetScenes";
-import { getNeighborhoodPulse, getRecommendations, parseContext } from "@/lib/api";
+import { getNeighborhoodPulse, parseContext, streamRecommendations, type ProgressEvent } from "@/lib/api";
 import type { HyperContext, ItineraryOption, NeighborhoodPulse as NeighborhoodPulseType } from "@/types/cityflaneur";
 
 const initialContext: HyperContext = {
@@ -28,6 +28,7 @@ export default function Home() {
   const [recommendations, setRecommendations] = useState<ItineraryOption[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [logEvents, setLogEvents] = useState<ProgressEvent[]>([]);
   const [pulseLoading, setPulseLoading] = useState(false);
   const [pulses, setPulses] = useState<NeighborhoodPulseType[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -35,15 +36,21 @@ export default function Home() {
 
   const selected = recommendations.find((option) => option.id === selectedId) ?? recommendations[0] ?? null;
 
-  async function submit() {
+  // Accept optional context override so GPS updates can submit immediately
+  // without waiting for React state to flush.
+  async function submit(ctxOverride?: HyperContext) {
+    const ctx = ctxOverride ?? context;
     setLoading(true);
+    setLogEvents([]);
     setError(null);
     try {
       const parsed = await parseContext({
-        ...context,
+        ...ctx,
         local_datetime: new Date().toISOString()
       });
-      const response = await getRecommendations(parsed);
+      const response = await streamRecommendations(parsed, (event) => {
+        setLogEvents((prev) => [...prev, event]);
+      });
       setContext(response.context);
       setRecommendations(response.recommendations);
       setSelectedId(response.recommendations[0]?.id ?? null);
@@ -54,10 +61,7 @@ export default function Home() {
     }
   }
 
-  useEffect(() => {
-    void submit();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // No auto-submit on mount — user must click "Find three options"
 
   useEffect(() => {
     if (!selected) {
@@ -90,7 +94,17 @@ export default function Home() {
 
   return (
     <main className="app-shell">
-      <BentoControls context={context} loading={loading} onChange={setContext} onSubmit={submit} />
+      <BentoControls
+        context={context}
+        loading={loading}
+        logEvents={logEvents}
+        onChange={setContext}
+        onSubmit={submit}
+        onLocationFound={(location) => {
+          // Just update the map center — don't auto-submit
+          setContext((prev) => ({ ...prev, location }));
+        }}
+      />
       <section className="workspace" aria-label="Map and recommendations">
         <MapPanel context={context} selected={selected} />
         <div className="results-panel">
@@ -127,13 +141,14 @@ export default function Home() {
           <NeighborhoodPulse pulses={pulses} loading={pulseLoading} />
           <StreetScenes selected={selected} />
           <div className="recommendation-list">
-            {recommendations.map((option) => (
+            {recommendations.map((option, index) => (
               <RecommendationCard
                 key={option.id}
                 option={option}
                 selected={selected?.id === option.id}
                 context={context}
                 sessionId={sessionId}
+                rank={index + 1}
                 onSelect={() => setSelectedId(option.id)}
               />
             ))}

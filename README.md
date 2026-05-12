@@ -190,6 +190,7 @@ The current engine is functional but uses several approximations worth replacing
 
 - [Backend guide](docs/backend.md): API flow, recommendation logic, local spin-up, and validation.
 - [Data guide](docs/data.md): OSM ingestion, seed catalog, grid design, and data quality.
+- [Bandit guide](docs/bandit.md): LinUCB design, before/after comparison, LLM reward loop, and monitoring.
 - [Algorithm roadmap](docs/algorithm-roadmap.md): planned improvements to scoring, routing, and personalization.
 - [Planning algorithms](docs/planning-algorithms.md): beam search, orienteering, bandits, and simulator-guided planning notes.
 - [Architecture](docs/architecture.md): runtime shape and expansion path.
